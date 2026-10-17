@@ -1,0 +1,121 @@
+name: Radar Macerata - Test PDF Matelica v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pdf-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Installa browser
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Verifica accesso dalla pagina ufficiale al PDF
+        shell: bash
+        run: |
+          cat > /tmp/test_pdf_matelica_v2.py <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from urllib.parse import urlparse
+          from playwright.sync_api import sync_playwright
+          
+          DIR=Path('diagnostica_pdf_matelica_v2');DIR.mkdir(exist_ok=True)
+          REPORT={'checked_at_utc':datetime.now(timezone.utc).isoformat(),'outcome':'CONTROLLO INCOMPLETO','pdf_confirmed':False,'steps':[],'errors':[],'downloads':[],'pdf_responses':[],'pages':[],'network_samples':[]}
+          HOME='https://matelica.halleyegov.it/'
+          ALBO='https://www.comune.matelica.mc.it/EG0/EGHOMEPAGE.HBL?ss=1&F=MC09&en=eg848&freeze=1&P='
+          
+          def log(name, detail=''):
+              REPORT['steps'].append({'name':name,'detail':str(detail)[:350]})
+              print('FASE',name,str(detail)[:350],flush=True)
+          
+          def record_pdf_blob(payload, source):
+              if payload.startswith(b'%PDF') and len(payload)>500:
+                  REPORT['pdf_confirmed']=True
+                  REPORT['downloads'].append({'via':source,'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest(),'signature':'%PDF'})
+                  log('pdf_identificato',str(len(payload))+' bytes, fonte='+source)
+          
+          with sync_playwright() as p:
+              browser=p.chromium.launch(headless=True)
+              ctx=browser.new_context(accept_downloads=True,locale='it-IT',viewport={'width':1200,'height':900})
+              files=[]
+              def record_download(dl):
+                  files.append(dl)
+                  log('download_event',dl.suggested_filename)
+              def listen_page(pg):
+                  pg.on('download',record_download)
+              ctx.on('page',listen_page)
+              def record_response(r):
+                  try:
+                      url=r.url
+                      ct=r.headers.get('content-type','').lower()
+                      if '.mc.it' in urlparse(url).hostname or 'pdf' in ct or 'octet-stream' in ct:
+                          if len(REPORT['network_samples'])<120:
+                              REPORT['network_samples'].append({'status':r.status,'url':url[:300],'type':ct[:100]})
+                      if 'pdf' in ct or 'octet-stream' in ct or r.headers.get('content-disposition'):
+                          entry={'status':r.status,'url':url[:500],'content_type':ct,'content_disposition':r.headers.get('content-disposition','')[:150]}
+                          try:
+                              payload=r.body()
+                              entry['size']=len(payload)
+                              entry['starts_pdf']=payload.startswith(b'%PDF')
+                              record_pdf_blob(payload,'risposta HTTP')
+                          except Exception as e:entry['body_error']=str(e)[:180]
+                          REPORT['pdf_responses'].append(entry)
+                  except Exception as e:log('errore_evento_rete',str(e)[:180])
+              ctx.on('response',record_response)
+              page=ctx.new_page()
+              try:
+                  resp=page.goto(HOME,wait_until='domcontentloaded',timeout=40000)
+                  log('home',str(resp.status if resp else 'nessuna risposta HTTP')+' '+page.url)
+                  # Nel test precedente l'errore era usare immediatamente la prima scheda
+                  # dopo il click: qui apriamo il percorso parametrizzato già verificato.
+                  resp=page.goto(ALBO,wait_until='domcontentloaded',timeout=40000)
+                  page.get_by_text('CONVOCAZIONE CONSIGLIO COMUNALE.',exact=False).first.wait_for(timeout=25000)
+                  log('albo_parametrizzato',str(resp.status if resp else 'nessuna risposta HTTP')+' '+page.url)
+                  page.get_by_text('CONVOCAZIONE CONSIGLIO COMUNALE.',exact=False).first.click(timeout=16000)
+                  page.get_by_text('Prot_Par 0018539',exact=False).first.wait_for(timeout=15000)
+                  sheet=ctx.pages[-1]
+                  body=sheet.locator('body').inner_text(timeout=10000)
+                  if 'Pubblicazione n. 1360/2026' not in body or 'CONVOCAZIONE_signed.pdf' not in body:
+                      raise RuntimeError('Scheda n. 1360 e allegato non confermati; verificare il documento prima di proseguire')
+                  log('scheda_1360',sheet.url)
+                  anchor=sheet.locator('a[onclick*="MC98("]').filter(has_text='CONVOCAZIONE_signed.pdf')
+                  if anchor.count()!=1:
+                      raise RuntimeError('Pulsante PDF non univoco/non presente: '+str(anchor.count()))
+                  log('comando_pdf',anchor.first.get_attribute('onclick'))
+                  anchor.first.click(timeout=18000)
+                  sheet.wait_for_timeout(8500)
+                  for dl in files:
+                      try:
+                          dest=DIR/'allegato_temp.bin'
+                          dl.save_as(dest)
+                          data=dest.read_bytes()
+                          record_pdf_blob(data,'download Playwright')
+                          REPORT['downloads'].append({'filename':dl.suggested_filename,'size':len(data),'valid_pdf':data.startswith(b'%PDF')})
+                          dest.unlink(missing_ok=True)
+                      except Exception as e:REPORT['errors'].append('Download: '+str(e)[:350])
+                  REPORT['pages']=[{'url':pg.url,'title':pg.title()[:150]} for pg in ctx.pages]
+                  REPORT['outcome']='PDF ACQUISITO E VERIFICATO' if REPORT['pdf_confirmed'] else 'SCHEDA E PULSANTE CONFERMATI; PDF NON ANCORA ACQUISITO'
+              except Exception as e:
+                  REPORT['errors'].append(str(e)[:1000]);log('interrotto',str(e)[:350])
+              finally:
+                  try:page.screenshot(path=str(DIR/'schermata_finale.png'),full_page=False)
+                  except Exception:pass
+                  browser.close()
+          (DIR/'risultati.json').write_text(json.dumps(REPORT,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('ESITO',REPORT['outcome'],'pdf_confirmed=',REPORT['pdf_confirmed'],'steps=',len(REPORT['steps']),'errors=',REPORT['errors'],flush=True)
+          PY
+          python /tmp/test_pdf_matelica_v2.py
+      - name: Salva rapporto diagnostico per sette giorni
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostica-matelica-pdf-v2
+          path: diagnostica_pdf_matelica_v2/
+          retention-days: 7
+          if-no-files-found: warn
