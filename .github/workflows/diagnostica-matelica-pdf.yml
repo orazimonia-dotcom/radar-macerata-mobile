@@ -1,0 +1,124 @@
+name: Radar Macerata - Test PDF Matelica
+
+# Test indipendente e diagnostico: non modifica Radar o il sito pubblico.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pdf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Installa browser
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Prova il download della convocazione numero 1360
+        shell: bash
+        run: |
+          cat > /tmp/test_pdf_matelica.py <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+
+          out = Path('diagnostica_pdf_matelica')
+          out.mkdir(exist_ok=True)
+          result = {'when_utc':datetime.now(timezone.utc).isoformat(),
+                    'status':'CONTROLLO INCOMPLETO',
+                    'stage':[], 'pdf_download_confirmed':False,
+                    'errors':[], 'pdf_network_events':[]}
+          url='https://matelica.halleyegov.it/'
+          def stage(s, detail=''):
+              result['stage'].append({'fase':s, 'dettaglio':str(detail)[:700]})
+              print('FASE',s,str(detail)[:250], flush=True)
+          try:
+              with sync_playwright() as p:
+                  browser=p.chromium.launch(headless=True)
+                  ctx=browser.new_context(accept_downloads=True,locale='it-IT',viewport={'width':1280,'height':900})
+                  traffic=[]
+                  def response(r):
+                      try:
+                          head=r.headers
+                          ct=head.get('content-type','').lower()
+                          cd=head.get('content-disposition','').lower()
+                          if 'pdf' in ct or 'attachment' in cd or 'pdf' in r.url.lower() or 'documento' in r.url.lower():
+                              traffic.append({'status':r.status,'url':r.url[:700], 'content_type':ct[:90], 'content_disposition':cd[:130]})
+                      except Exception:
+                          pass
+                  ctx.on('page',lambda pg:pg.on('response',response))
+                  page=ctx.new_page()
+                  page.goto(url,wait_until='domcontentloaded',timeout=40000)
+                  page.wait_for_timeout(1800)
+                  stage('home',page.url)
+                  link=page.get_by_text('Albo pretorio',exact=True)
+                  if not link.count():
+                      raise RuntimeError('Voce Albo pretorio non trovata nella home')
+                  link.first.click(timeout=20000)
+                  page.wait_for_timeout(1700)
+                  active=ctx.pages[-1]
+                  stage('albo',active.url)
+                  conv=active.get_by_text('CONVOCAZIONE CONSIGLIO COMUNALE',exact=False)
+                  if not conv.count():
+                      raise RuntimeError('Pubblicazione 1360 convocazione non trovata sulla prima pagina; nessuna prova di assenza dall\'albo')
+                  conv.first.click(timeout=16000)
+                  active.wait_for_timeout(1800)
+                  sheet=ctx.pages[-1]
+                  body=sheet.locator('body').inner_text(timeout=16000)
+                  stage('scheda',sheet.url)
+                  if 'Pubblicazione n. 1360/2026' not in body or 'CONVOCAZIONE_signed.pdf' not in body:
+                      raise RuntimeError('La scheda non corrisponde alla pubblicazione 1360 con allegato atteso')
+                  sheet.screenshot(path=str(out/'scheda.png'),full_page=False)
+                  anchor=sheet.locator('a[onclick*="MC98("]').filter(has_text='CONVOCAZIONE_signed.pdf')
+                  if not anchor.count():
+                      raise RuntimeError('Link PDF JavaScript MC98 non trovato nella scheda')
+                  onclick=anchor.first.get_attribute('onclick')
+                  stage('pulsante_allegato','onclick='+str(onclick))
+                  try:
+                      with sheet.expect_download(timeout=20000) as pending:
+                          anchor.first.click(timeout=12000)
+                      dl=pending.value
+                      dest=out/'documento_test.pdf'
+                      dl.save_as(dest)
+                      data=dest.read_bytes()
+                      valid=data.startswith(b'%PDF') and len(data)>500
+                      result['pdf_download_confirmed']=valid
+                      result['download']={'suggested_filename':dl.suggested_filename,
+                                          'bytes':len(data),'header_pdf_valid':valid,
+                                          'failure':dl.failure()}
+                      stage('download','PDF confermato' if valid else 'Download effettuato, contenuto non verificato come PDF')
+                      # Conserva solo metadati nel report. Il documento originale non va nell'artefatto.
+                      dest.unlink(missing_ok=True)
+                  except BrowserTimeout:
+                      stage('download','Nessun evento download nella scheda entro 20 secondi; controllo delle richieste e delle nuove schede')
+                  sheet.wait_for_timeout(1000)
+                  result['pdf_network_events']=traffic[-35:]
+                  result['pages_after_click']=[x.url for x in ctx.pages]
+                  try:
+                      sheet.screenshot(path=str(out/'dopo_click.png'),full_page=False)
+                  except Exception:
+                      pass
+                  if result['pdf_download_confirmed']:
+                      result['status']='PDF SCARICATO E IDENTIFICATO'
+                  elif any('pdf' in x.get('content_type','') for x in traffic):
+                      result['status']='PDF RILEVATO IN RETE MA DOWNLOAD NON CONFERMATO'
+                  else:
+                      result['status']='ALLEGATO VISIBILE, PDF NON RECUPERATO'
+                  browser.close()
+          except Exception as e:
+              result['errors'].append(str(e)[:1000])
+          (out/'risultati.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('ESITO:',result['status'],'download_pdf=',result['pdf_download_confirmed'],'errori=',result['errors'],flush=True)
+          PY
+          python /tmp/test_pdf_matelica.py
+      - name: Conserva rapporto e schermate (7 giorni)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostica-pdf-matelica
+          path: diagnostica_pdf_matelica/
+          retention-days: 7
+          if-no-files-found: warn
