@@ -1,0 +1,580 @@
+name: Radar Macerata · verifica fonti pilota
+
+# PROTOTIPO: 11 fonti tentate, non copertura delle 80 fonti progettate.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * *'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: radar-macerata-mobile
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Scarica il repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Librerie per la lettura delle fonti pubbliche
+        run: python -m pip install 'requests>=2.31,<3' 'beautifulsoup4>=4.12,<5' 'pypdf>=4,<7'
+      - name: Scrive il motore di monitoraggio e il catalogo pilota
+        shell: bash
+        run: |
+          cat > radar.py <<'PYRADAR'
+          #!/usr/bin/env python3
+          """Radar Macerata v1.0: monitoraggio documentale, audit e dashboard locale.
+          Usa solo siti pubblici e non tenta di aggirare sistemi di accesso.
+          """
+          from __future__ import annotations
+          import argparse
+          import csv
+          import hashlib
+          import html
+          import io
+          import json
+          import re
+          import sqlite3
+          import sys
+          import time
+          from datetime import datetime, date, timedelta
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
+          from zoneinfo import ZoneInfo
+          import requests
+          from bs4 import BeautifulSoup
+          
+          ROOT = Path(__file__).resolve().parent
+          DATA = ROOT / 'data'
+          OUT = ROOT / 'output'
+          ITALY = ZoneInfo('Europe/Rome')
+          USER_AGENT = 'RadarMacerata/1.0 (+local journalistic monitoring; contact the webmaster for opt-out)'
+          DATE_RX = re.compile(r'\b([0-3]?\d)[/\-.]([01]?\d)[/\-.](20\d\d)\b')
+          EURO_RX = re.compile(r'(?:€\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:euro|milioni?|mila)\b)', re.I)
+          CUP_RX = re.compile(r'\bCUP\s*[:\-]?\s*[A-Z0-9]{10,16}\b', re.I)
+          CIG_RX = re.compile(r'\bCIG\s*[:\-]?\s*[A-Z0-9]{8,12}\b', re.I)
+          CATEGORIES = {
+              'Ricostruzione sisma': (7, ('sisma', 'ricostruzion', 'terremot', 'sae', 'cas ', 'contributo autonoma sistemazione', 'messa in sicurezza', 'sottocorte')),
+              'Cantieri e opere': (6, ('lavori', 'appalto', 'progetto esecutivo', 'progettazion', 'cantiere', 'viabilit', 'collaudo', 'sal ', 'affidamento', 'aggiudicazion')),
+              'Contenziosi': (7, ('ricorso', 'tar ', 'sentenza', 'tribunale', 'contenzioso', 'pignoramento', 'decreto ingiuntivo')),
+              'Sanità': (6, ('ospedale', 'sanità', 'ast ', 'pronto soccorso', 'diagnostic', 'medicina territorial')),
+              'Ambiente e rifiuti': (6, ('discarica', 'rifiut', 'cosmari', 'raccolta differenziata', 'acqua potabile', 'depurator')),
+              'Scuola': (5, ('scuola', 'scolastic', 'istruzione', 'istituto', 'licei')),
+              'Finanze pubbliche': (4, ('bilancio', 'finanziamento', 'contributi', 'liquidazione', 'variazione', 'tesoreria')),
+              'Urbanistica': (4, ('urbanistic', 'piano regolatore', 'destinazione d’uso', "destinazione d'uso", 'piano attuativo')),
+              'Servizi e comunità': (3, ('servizi sociali', 'anziani', 'trasporto pubblico', 'commerc', 'impianti sportivi')),
+          }
+          BORING = ('patrocinio', 'formazione del personale', 'bollo auto', 'liquidazione fattura', 'rimborso spese', 'verbali seduta')
+          
+          
+          def now():
+              return datetime.now(ITALY)
+          
+          
+          def clean(s):
+              return re.sub(r'\s+', ' ', str(s or '')).strip()
+          
+          
+          def dmy_to_iso(s):
+              if not s: return None
+              m = DATE_RX.search(s)
+              if not m: return None
+              try: return date(int(m[3]), int(m[2]), int(m[1])).isoformat()
+              except ValueError: return None
+          
+          
+          def canonical(url):
+              parsed = urlparse(url)
+              params = [(k,v) for k,v in parse_qsl(parsed.query) if k.lower() not in ('sid','sessionid','phpsessid','utm_source','utm_medium','utm_campaign')]
+              return urlunparse((parsed.scheme.lower(),parsed.netloc.lower(), parsed.path.rstrip('/') or '/', '', urlencode(params), ''))
+          
+          
+          def ancestors_text(tag, stop_at=5):
+              for _ in range(stop_at):
+                  if not tag or not hasattr(tag, 'get_text'): break
+                  s = clean(tag.get_text(' ',strip=True))
+                  if 20 < len(s) < 2500:
+                      yield s
+                  tag = tag.parent
+          
+          
+          def nearest_date(tag, kind):
+              texts = list(ancestors_text(tag, 4))
+              if kind == 'sibillini':
+                  for s in texts:
+                      m = re.search(r'\bdal\s+([0-3]?\d[/\-.][01]?\d[/\-.]20\d\d)',s,re.I)
+                      if m: return dmy_to_iso(m[1])
+              if kind in ('ata','aato'):
+                  for s in texts:
+                      matches = DATE_RX.findall(s)
+                      if matches and len(s) < 1500:
+                          # L'Albo ATA riporta dal/al: prima data = inizio pubblicazione.
+                          a = matches[0]
+                          return dmy_to_iso('/'.join(a))
+              if kind == 'matelica_news':
+                  for s in texts:
+                      m = DATE_RX.search(s[:140])
+                      if m: return dmy_to_iso(m.group())
+              if kind == 'halley':
+                  for s in texts:
+                      m = re.search(r'\bdel\s+([0-3]?\d[/\-.][01]?\d[/\-.]20\d\d)',s,re.I)
+                      if m: return dmy_to_iso(m[1])
+              return None
+          
+          
+          def is_document_url(url, source):
+              p = urlparse(url)
+              path = p.path.lower()
+              if p.scheme not in ('http','https'): return False
+              if source['kind']=='sibillini':
+                  return p.netloc.lower().endswith('albo.sibillini.net') and len(path.strip('/')) > 20 and 'page/' not in path and path not in ('/', '/feed/')
+              if source['kind']=='halley':
+                  return '/atti-amministrativi/' in path and '/dettaglio' in path
+              if source['kind'] in ('ata','aato'):
+                  return any(x in p.netloc.lower() for x in ('ata3macerata.it','ato3marche.it')) and '/amministrazione-trasparente/' in path and '/provvedimenti' in path
+              if source['kind']=='matelica_news':
+                  return 'comune.matelica.mc.it' in p.netloc.lower() and '/novita/' in path and path.endswith('.html')
+              return False
+          
+          
+          def index_partial(source, html_text):
+              soup=BeautifulSoup(html_text,'html.parser')
+              kind=source['kind']
+              if kind=='matelica_news':
+                  return True  # la homepage è soltanto una selezione, non tutte le novità
+              if kind=='halley':
+                  return any('successiva' in clean(a.get_text(' ',strip=True)).casefold() for a in soup.find_all('a'))
+              if kind=='sibillini':
+                  return any('/page/' in (a.get('href','')) or 'pagina successiva' in clean(a.get_text(' ',strip=True)).casefold() for a in soup.find_all('a',href=True))
+              if kind in ('ata','aato'):
+                  return any('successiva' in clean(a.get_text(' ',strip=True)).casefold() or 'next' == clean(a.get_text(' ',strip=True)).casefold() for a in soup.find_all('a',href=True))
+              return True
+          
+          
+          def parse_index(source, html_text):
+              soup = BeautifulSoup(html_text,'html.parser')
+              for tag in soup(['script','style','noscript']): tag.decompose()
+              rows=[]
+              seen=set()
+              for a in soup.find_all('a',href=True):
+                  url=urljoin(source['url'],a.get('href',''))
+                  if not is_document_url(url,source): continue
+                  title=clean(a.get_text(' ',strip=True))
+                  if len(title)<17 or len(title)>1200: continue
+                  key=canonical(url)
+                  if key in seen: continue
+                  seen.add(key)
+                  pub=nearest_date(a,source['kind']) if source['kind']!='halley' else None
+                  context=next((txt for txt in ancestors_text(a,5) if re.search(r'\b(?:delibera|determina|ordinanza)\b.*?\bdel\s+[0-3]?\d[/\-.]',txt,re.I)),title)
+                  m = re.search(r'\b(?:delibera|determina|determinazione|ordinanza)\s+(?:di\s+\w+\s+)?(?:n\.|numero|reg\.gen\.)?\s*(\d+)\s+del\s+([0-3]?\d[/\-.][01]?\d[/\-.]20\d\d)', context,re.I)
+                  actdate = dmy_to_iso(m[2]) if m else (nearest_date(a,'halley') if source['kind']=='halley' else None)
+                  docnum = m[1] if m else None
+                  # Negli atti ATA/AATO le informazioni della delibera/determina sono spesso nel titolo.
+                  if not actdate and source['kind'] in ('ata','aato'):
+                      numdate=re.search(r'\bN\.?\s*(\d+)\s+DEL\s+([0-3]?\d[/\-.][01]?\d[/\-.]20\d\d)',title,re.I)
+                      if numdate:actdate=dmy_to_iso(numdate[2]);docnum=numdate[1]
+                  if source['kind'] in ('ata','aato'):
+                      tr=a.find_parent('tr')
+                      if tr:
+                          cells=[clean(x.get_text(' ',strip=True)) for x in tr.find_all(['td','th'])]
+                          if len(cells)>=5: pub=dmy_to_iso(cells[-2]) or pub
+                  rows.append({'title':title, 'url':key, 'publication_date':pub, 'act_date':actdate,'act_number':docnum})
+              return rows
+          
+          
+          def textscore(title, locality):
+              low=title.casefold()
+              scores={k: sum(weight for term in terms if term in low) for k,(weight,terms) in CATEGORIES.items()}
+              theme=max(scores,key=scores.get)
+              if scores[theme]==0: theme='Altri atti'
+              score=min(100, 15 + min(45,sum(sorted(scores.values(),reverse=True)[:2])) + (13 if EURO_RX.search(title) else 0) + (13 if CUP_RX.search(title) else 0) + (10 if CIG_RX.search(title) else 0) + (4 if locality in ('Camerino','Matelica','San Severino') else 0))
+              if any(x in low for x in BORING):score=max(0,score-20)
+              return theme,score
+          
+          
+          def get_html(session,url, tries=3, timeout=15):
+              error=''
+              for i in range(tries):
+                  try:
+                      r=session.get(url,timeout=timeout,allow_redirects=True)
+                      r.raise_for_status()
+                      ctype=r.headers.get('content-type','').lower()
+                      if 'text/html' not in ctype and 'application/xhtml' not in ctype and not r.text.lstrip().startswith(('<!DOCTYPE','<html')):
+                          raise ValueError('risposta non HTML: '+ctype)
+                      if any(x in r.text.lower() for x in ('access denied','captcha','attention required!','error 403 forbidden')):
+                          raise ValueError('possibile blocco o CAPTCHA')
+                      return r.text,None,r.url
+                  except (requests.RequestException,ValueError) as e:
+                      error=f'{type(e).__name__}: {str(e)[:190]}'
+                      if i<tries-1:time.sleep(1+i)
+              return None,error,None
+          
+          
+          def details(session,article):
+              doc = dict(article)
+              page,error,final_url = get_html(session, article['url'],tries=2)
+              doc.update(level='INDICE', detail_error=error, document_url='', document_text='')
+              if not page: return doc
+              soup=BeautifulSoup(page,'html.parser')
+              text=clean(soup.get_text(' ',strip=True))
+              title=article['title']
+              h1=clean((soup.find('h1') or soup.find('h2') or soup).get_text(' ',strip=True))
+              # Non basta una pagina vuota, di errore, o una scheda che non riguarda l'atto.
+              needles=[w.casefold() for w in re.findall(r'\w{5,}',title)[:7]]
+              coverage=sum(word in text.casefold() for word in needles)/max(1,len(needles))
+              if len(text)<130 or coverage<0.6:
+                  doc['detail_error']='Scheda priva di corrispondenza sufficiente con il titolo'
+                  return doc
+              doc['level']='SCHEDA'
+              doc['detail_error']=''
+              # L'atto PDF è verificato soltanto se scaricato, aperto e leggibile.
+              pdf_links=[]
+              for a in soup.find_all('a',href=True):
+                  link=urljoin(final_url,a['href'])
+                  if (urlparse(link).path.lower().endswith('.pdf') or 'pdf' in clean(a.get_text(' ',strip=True)).casefold()[:80] or re.search(r'\bPDF\b', clean(a.parent.get_text(' ',strip=True))[:350], re.I)):
+                      if link.startswith(('http://','https://')):pdf_links.append(link)
+              if not pdf_links:return doc
+              for link in pdf_links[:2]:
+                  try:
+                      r=session.get(link,timeout=15)
+                      r.raise_for_status()
+                      if not r.content.startswith(b'%PDF') or len(r.content)>15_000_000: continue
+                      from pypdf import PdfReader
+                      reader=PdfReader(io.BytesIO(r.content))
+                      if len(reader.pages)>40:continue  # non etichettare DOCUMENTO un PDF solo parzialmente letto
+                      excerpt=clean(' '.join((page.extract_text() or '') for page in reader.pages))
+                      if len(excerpt)>180:
+                          keywords=[w.casefold() for w in re.findall(r'\w{5,}',title)[:10]]
+                          relevant=sum(w in excerpt.casefold() for w in keywords)/max(1,len(keywords))
+                          if relevant<0.35: continue
+                          doc['level']='DOCUMENTO'
+                          doc['document_url']=link
+                          doc['document_text']=excerpt[:1100]
+                          break
+                  except Exception:
+                      continue
+              return doc
+          
+          
+          def connect(dbpath):
+              dbpath.parent.mkdir(parents=True,exist_ok=True)
+              db=sqlite3.connect(dbpath)
+              db.row_factory=sqlite3.Row
+              db.executescript('''
+                CREATE TABLE IF NOT EXISTS items (
+                 uid TEXT PRIMARY KEY, source_id TEXT, title TEXT, url TEXT,
+                 first_seen TEXT, last_seen TEXT, publication_date TEXT, act_date TEXT,
+                 act_number TEXT, theme TEXT, score INTEGER, evidence_level TEXT,
+                 document_url TEXT, excerpt TEXT, novelty TEXT, detail_error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS checks (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT, checked_at TEXT,
+                 state TEXT, count INTEGER, new_count INTEGER, latest_date TEXT,
+                 note TEXT, url TEXT
+                );
+              ''')
+              db.commit()
+              return db
+          
+          
+          def fetch_source(db,session,source,clock,day_override=None):
+              stamp=clock.isoformat(timespec='seconds')
+              if not source.get('enabled',True):
+                  res=('GRIGIO',0,0,None,'Sorgente disabilitata: NON CONTROLLATA')
+              else:
+                  content,error,final_url=get_html(session,source['url'])
+                  if content is None:
+                      res=('ROSSO',0,0,None,'CONTROLLO INCOMPLETO: '+str(error))
+                  else:
+                      parsed=parse_index(source,content)
+                      if not parsed:
+                          res=('GIALLO',0,0,None,'CONTROLLO INCOMPLETO: pagina raggiunta ma nessun atto estratto (HTML cambiato, indice vuoto o limite di accesso).')
+                      else:
+                          new=0; evidenced=0; dates=[]
+                          existing=db.execute('SELECT COUNT(*) FROM items WHERE source_id=?',(source['id'],)).fetchone()[0]
+                          for row in parsed[:60]:
+                              uid=hashlib.sha256((source['id']+'|'+row['url']).encode()).hexdigest()
+                              prev=db.execute('SELECT uid,evidence_level,document_url,excerpt,detail_error FROM items WHERE uid=?',(uid,)).fetchone()
+                              pdate=row['publication_date']
+                              if pdate:dates.append(pdate)
+                              if prev:
+                                  # Rivaluta soltanto schede senza PDF una volta ogni controllo: utile a recuperare documenti.
+                                  item=details(session,row) if prev['evidence_level']!='DOCUMENTO' and (len(parsed)<30 or parsed.index(row)<10) else {**row,'level':prev['evidence_level'],'document_url':prev['document_url'],'document_text':prev['excerpt'],'detail_error':prev['detail_error']}
+                                  novelty='GIÀ CENSITO'
+                              else:
+                                  if existing==0: novelty='PRIMA RILEVAZIONE'
+                                  elif not pdate: novelty='DATA PUBBLICAZIONE DA VERIFICARE'
+                                  elif pdate < clock.date().isoformat(): novelty='RETROSPETTIVO PER '+(day_override or pdate)
+                                  else: novelty='NUOVO'
+                                  if day_override: novelty='RETROSPETTIVO PER '+day_override
+                                  item=details(session,row) if parsed.index(row)<15 else {**row,'level':'INDICE','detail_error':'Scheda non ancora verificata (limite controlli per fonte)','document_url':'','document_text':''}
+                                  new+=1
+                              evidenced += item['level'] in ('SCHEDA','DOCUMENTO')
+                              theme,score=textscore(row['title'],source.get('group',''))
+                              db.execute('''INSERT INTO items(uid,source_id,title,url,first_seen,last_seen,publication_date,act_date,act_number,theme,score,evidence_level,document_url,excerpt,novelty,detail_error)
+                                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                 ON CONFLICT(uid) DO UPDATE SET last_seen=excluded.last_seen, publication_date=COALESCE(excluded.publication_date,items.publication_date),act_date=COALESCE(excluded.act_date,items.act_date),evidence_level=excluded.evidence_level,document_url=excluded.document_url,excerpt=excluded.excerpt,detail_error=excluded.detail_error,novelty=excluded.novelty''',
+                                 (uid,source['id'],row['title'],row['url'],stamp,stamp,pdate,row['act_date'],row['act_number'],theme,score,item['level'],item.get('document_url',''),item.get('document_text',''),novelty,item.get('detail_error','')))
+                          latest=max(dates) if dates else None
+                          # Se indice solo e nessuna data, controllo incompleto anziché verde.
+                          fresh=bool(latest and latest >= (clock.date()-timedelta(days=14)).isoformat())
+                          partial=index_partial(source,content)
+                          if False: res=('VERDE',len(parsed),new,latest,'Indice integralmente verificato')
+                          else:
+                              reason='indice senza date leggibili' if not latest else ('indice apparentemente fermo a '+latest if not fresh else ('paginazione o archivio non integralmente acquisiti' if partial else 'schede non consultabili'))
+                              res=('GIALLO',len(parsed),new,latest,'CONTROLLO INCOMPLETO: '+reason)
+              db.execute('INSERT INTO checks(source_id,checked_at,state,count,new_count,latest_date,note,url) VALUES(?,?,?,?,?,?,?,?)',
+                         (source['id'],stamp,*res,source['url']))
+              db.commit()
+              return res
+          
+          
+          def safe(x):return html.escape(str(x or ''),quote=True)
+          
+          
+          def export(db, sources, clock):
+              OUT.mkdir(exist_ok=True)
+              checks=db.execute('SELECT c.* FROM checks c INNER JOIN (SELECT source_id,MAX(id) AS id FROM checks GROUP BY source_id) x ON c.id=x.id').fetchall()
+              statuses={r['source_id']:dict(r) for r in checks}
+              for source in sources:
+                  if source['id'] not in statuses:
+                      statuses[source['id']]={'source_id':source['id'],'checked_at':'', 'state':'GRIGIO','count':0,'new_count':0,'latest_date':None,'note':'NON CONTROLLATA: eseguire python radar.py check','url':source['url']}
+              checks=list(statuses.values())
+              srcs={s['id']:s for s in sources}
+              for check in checks:
+                  check['source_name']=srcs.get(check['source_id'],{}).get('name',check['source_id'])
+              items=[dict(x) for x in db.execute('SELECT * FROM items ORDER BY score DESC,publication_date DESC LIMIT 3500')]
+              counts={k:sum(v['state']==k for v in statuses.values()) for k in ('VERDE','GIALLO','ROSSO','GRIGIO')}
+              threshold=(clock.date()-timedelta(days=14)).isoformat()
+              for x in items:
+                  x['source_name']=srcs.get(x['source_id'],{}).get('name',x['source_id'])
+                  x['group']=srcs.get(x['source_id'],{}).get('group','')
+                  x['source_state']=statuses.get(x['source_id'],{}).get('state','GRIGIO')
+                  x['old']=bool(x['publication_date'] and x['publication_date']<threshold)
+                  x['ready_for_article']=bool(x['evidence_level']=='DOCUMENTO' and x['score']>=48 and not x['old'])
+                  x['link_proof']=x['document_url'] if x['document_url'] else x['url']
+              payload={'generated':clock.strftime('%d/%m/%Y %H:%M %Z'), 'generated_iso':clock.isoformat(), 'counts':counts,'checks':[dict(x) for x in checks],'items':items,'warning':'Un sito non raggiunto non significa assenza di atti. Il controllo è locale e non costituisce un servizio online attivo.'}
+              (OUT/'report.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
+              with (OUT/'notizie.csv').open('w',newline='',encoding='utf-8-sig') as f:
+                  fields=['publication_date','act_date','source_name','title','theme','score','evidence_level','novelty','url','document_url','detail_error']
+                  w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');w.writeheader();w.writerows(items)
+              with (OUT/'fonti.csv').open('w',newline='',encoding='utf-8-sig') as f:
+                  fields=['checked_at','source_id','state','count','new_count','latest_date','note','url']
+                  w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');w.writeheader();w.writerows([dict(x) for x in checks])
+              page=render(payload)
+              (OUT/'index.html').write_text(page,encoding='utf-8')
+              return payload
+          
+          
+          def render(payload):
+              counts=payload['counts']; items=payload['items']; checks=payload['checks']
+              checks.sort(key=lambda x:(0 if x['state']=='ROSSO' else 1 if x['state']=='GIALLO' else 2,x['source_id']))
+              cards=[]
+              for c in checks:
+                  cards.append(f'''<div class="source"><span class="dot {safe(c['state'])}"></span><div><strong>{safe(c['source_id'].replace('_',' ').title())}</strong><small>{safe(c['note'])}</small><small>Ultima data identificata: {safe(c['latest_date'] or 'non disponibile')}</small></div><a target="_blank" rel="noopener noreferrer" href="{safe(c['url'])}">Fonte ↗</a></div>''')
+              table=[]
+              for i in items:
+                  if i['score']<27:continue
+                  lvl=i['evidence_level']; novelty=i['novelty']; date_label=i['publication_date'] or i['act_date'] or 'data non ricavata'
+                  table.append(f'''<article class="story" data-theme="{safe(i['theme'])}" data-group="{safe(i['group'])}" data-status="{safe(lvl)}" data-title="{safe((i['title']+' '+i['source_name']).lower())}">
+                   <div class="story-meta"><span>{safe(i['source_name'])}</span><span>{safe(date_label)}</span><span class="badge {safe(lvl)}">{safe(lvl)}</span><span class="badge novelty">{safe(novelty)}</span></div>
+                   <h3>{safe(i['title'])}</h3><div class="story-foot"><span>Priorità editoriale <b>{i['score']}/100</b> · {safe(i['theme'])}</span><a href="{safe(i['url'])}" target="_blank" rel="noopener noreferrer">Apri scheda ↗</a>{('<a href="'+safe(i['document_url'])+'" target="_blank" rel="noopener noreferrer">PDF verificato ↗</a>') if i['document_url'] else ''}</div>
+                   {('<div class="warn">'+safe(i['detail_error'])+'</div>') if i['detail_error'] and lvl=='INDICE' else ''}
+                   </article>''')
+              return '''<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Radar Macerata · Dashboard</title><style>
+              :root{--navy:#192838;--muted:#5e6f7a;--bg:#f4f7f9;--line:#dbe4e9;--accent:#ca4f2c}
+              *{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:var(--navy)}header{background:var(--navy);color:white;padding:30px max(20px,calc((100vw - 1180px)/2)) 25px}header h1{font-size:35px;letter-spacing:-1.3px;margin:3px 0}header small{color:#bacbd2}.eyebrow{font-size:12px;letter-spacing:.16em;color:#f2aa7d;text-transform:uppercase;font-weight:750}.container{max-width:1180px;margin:24px auto;padding:0 16px}.lead{background:#eaf2f5;border-left:5px solid #6094ab;padding:15px;border-radius:7px;margin-bottom:17px;line-height:1.5}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.stat{background:white;border:1px solid var(--line);border-radius:10px;padding:18px}.stat strong{display:block;font-size:29px}.stat small{color:var(--muted)}h2{margin:31px 0 13px;font-size:22px}a{color:#176487;text-decoration:none}a:hover{text-decoration:underline}.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}input,select{border:1px solid #cbd8de;border-radius:7px;padding:11px;background:white;min-width:180px;max-width:100%;font:inherit}input{flex:1}.story{background:white;padding:17px 20px;margin:9px 0;border-radius:10px;border:1px solid var(--line)}.story-meta,.story-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;font-size:12px;color:var(--muted)}.story h3{font-size:16px;line-height:1.4;margin:11px 0 12px}.story-foot{justify-content:space-between}.badge{padding:3px 7px;border-radius:4px;background:#edf1f4;color:#526573;font-size:11px}.badge.DOCUMENTO{background:#e5f5e8;color:#21703c}.badge.SCHEDA{background:#fff1de;color:#97551c}.badge.novelty{background:#ebf0fa;color:#385c8b}.warn{font-size:12px;background:#fff5e7;border-left:3px solid #eda22c;padding:9px;margin-top:10px}.sources{display:grid;grid-template-columns:1fr 1fr;gap:7px}.source{background:white;padding:12px;border-radius:8px;border:1px solid var(--line);display:flex;gap:12px;align-items:flex-start;font-size:13px}.source div{flex:1}.source strong,.source small{display:block}.source small{font-size:11px;margin-top:6px;color:var(--muted);line-height:1.4}.source a{white-space:nowrap;font-size:11px}.dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;margin-top:5px;background:#aaa}.dot.VERDE{background:#198754}.dot.GIALLO{background:#e6aa22}.dot.ROSSO{background:#bd4b45}.dot.GRIGIO{background:#8b949f}.footer{margin:30px 0;color:var(--muted);font-size:12px}.links{display:flex;gap:16px;flex-wrap:wrap}.hidden{display:none!important}#counter{font-size:13px;color:var(--muted)}@media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}.sources{grid-template-columns:1fr}header h1{font-size:27px}}
+              </style></head><body><header><div class="eyebrow">Osservatorio documentale · provincia di Macerata</div><h1>Radar Macerata</h1><small>Ultimo controllo: '''+safe(payload['generated'])+'''</small></header><main class="container"><p class="lead"><b>Come leggere il Radar:</b> DOCUMENTO = PDF originale scaricato e testo leggibile; SCHEDA = scheda istituzionale consultata, allegato non confermato; INDICE = solo titolo. Una fonte ROSSA indica <b>controllo incompleto</b>, non assenza di atti. Le prime rilevazioni NON sono automaticamente notizie del giorno.</p><div class="stats"><div class="stat"><strong>'''+str(counts['VERDE'])+'''</strong><small>Fonti verdi</small></div><div class="stat"><strong>'''+str(counts['GIALLO'])+'''</strong><small>Da verificare</small></div><div class="stat"><strong>'''+str(counts['ROSSO'])+'''</strong><small>Fonti inaccessibili</small></div><div class="stat"><strong>'''+str(len(items))+'''</strong><small>Atti in archivio</small></div></div><h2>Piste e atti consultabili</h2><div class="toolbar"><input id="search" placeholder="Cerca importi, parole, località…" aria-label="Cerca"><select id="theme"><option value="">Tutte le categorie</option>'''+''.join('<option>'+safe(k)+'</option>' for k in list(CATEGORIES)+['Altri atti'])+'''</select><select id="group"><option value="">Tutti i territori</option>'''+''.join('<option>'+safe(k)+'</option>' for k in sorted({i['group'] for i in items}))+'''</select><select id="level"><option value="">Tutti i livelli di verifica</option><option>DOCUMENTO</option><option>SCHEDA</option><option>INDICE</option></select></div><p id="counter"></p><section id="stories">'''+''.join(table)+'''</section><h2>Audit delle fonti</h2><p class="links"><a href="fonti.csv" download>↓ Scarica stato delle fonti (CSV)</a><a href="notizie.csv" download>↓ Scarica notizie e piste (CSV)</a><a href="report.json" download>↓ Dati integrali (JSON)</a></p><section class="sources">'''+''.join(cards)+'''</section><div class="footer">Nessuna previsione, articolo o dichiarazione è generata automaticamente. Usare sempre date di atto e pubblicazione, allegati e riscontri indipendenti prima di pubblicare.</div></main><script>
+              const controls=['search','theme','group','level'].map(id=>document.getElementById(id));function filter(){let [q,t,g,l]=controls.map(c=>c.value.toLowerCase());let n=0;document.querySelectorAll('.story').forEach(x=>{let match=x.dataset.title.includes(q)&&(!t||x.dataset.theme.toLowerCase()===t)&&(!g||x.dataset.group.toLowerCase()===g)&&(!l||x.dataset.status.toLowerCase()===l);x.classList.toggle('hidden',!match);if(match)n++});document.getElementById('counter').textContent=n+' elementi visualizzati · ordinati per priorità editoriale';}controls.forEach(c=>c.addEventListener('input',filter));filter();
+              </script></body></html>'''
+          
+          
+          def run(fake=False,for_day=None):
+              srcs=json.loads((ROOT/'sources.json').read_text(encoding='utf-8'))
+              DATA.mkdir(exist_ok=True);OUT.mkdir(exist_ok=True)
+              db=connect(DATA/'radar.sqlite3')
+              stamp=now()
+              ses=requests.Session()
+              ses.headers.update({'User-Agent':USER_AGENT,'Accept-Language':'it-IT,it;q=0.9','Accept':'text/html,application/xhtml+xml'})
+              for source in srcs:
+                  print('Controllo',source['name'],end=' ... ',flush=True)
+                  result=fetch_source(db,ses,source,stamp,day_override=for_day)
+                  print(result[0],result[1],'atti', result[-1][:70])
+                  time.sleep(0.3)
+              payload=export(db,srcs,stamp)
+              print('\nReport generato:',OUT/'index.html')
+              print('VERDE={VERDE} GIALLO={GIALLO} ROSSO={ROSSO} GRIGIO={GRIGIO}'.format(**payload['counts']))
+              db.close()
+          
+          
+          def main():
+              ap=argparse.ArgumentParser(description='Radar Macerata - monitoraggio fonti istituzionali')
+              ap.add_argument('action',choices=('check','report'),nargs='?',default='check')
+              ap.add_argument('--for-day',help='Scansione retrospettiva: data YYYY-MM-DD (NON sostituisce filtro portale)')
+              args=ap.parse_args()
+              if args.for_day:
+                  date.fromisoformat(args.for_day)
+              if args.action=='check':run(for_day=args.for_day)
+              else:
+                  srcs=json.loads((ROOT/'sources.json').read_text(encoding='utf-8'))
+                  db=connect(DATA/'radar.sqlite3');export(db,srcs,now());db.close();print('Dashboard ricreata senza rete.')
+          
+          if __name__=='__main__':main()
+          PYRADAR
+          cat > sources.json <<'JSONSOURCES'
+          [
+            {
+              "id": "sibillini_albo",
+              "name": "Parco nazionale Monti Sibillini · Albo",
+              "group": "Entroterra",
+              "kind": "sibillini",
+              "url": "https://albo.sibillini.net/",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "ata3_albo",
+              "name": "ATA 3 Macerata · Albo",
+              "group": "Rifiuti",
+              "kind": "ata",
+              "url": "https://www.ata3macerata.it/albo-pretorio/",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "aato3_albo",
+              "name": "AATO 3 Macerata · Albo",
+              "group": "Acqua",
+              "kind": "aato",
+              "url": "https://www.ato3marche.it/albo-pretorio/",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "matelica_news",
+              "name": "Matelica · Novità e avvisi",
+              "group": "Matelica",
+              "kind": "matelica_news",
+              "url": "https://www.comune.matelica.mc.it/",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "matelica_delibere",
+              "name": "Matelica · Delibere",
+              "group": "Matelica",
+              "kind": "halley",
+              "url": "https://matelica.halleyweb.it/zf/index.php/atti-amministrativi/delibere",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "matelica_determine",
+              "name": "Matelica · Determine",
+              "group": "Matelica",
+              "kind": "halley",
+              "url": "https://matelica.halleyweb.it/zf/index.php/atti-amministrativi/determine",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "camerino_delibere",
+              "name": "Camerino · Delibere",
+              "group": "Camerino",
+              "kind": "halley",
+              "url": "https://www.halleyweb.com/c043007/zf/index.php/atti-amministrativi/delibere",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "camerino_determine",
+              "name": "Camerino · Determine",
+              "group": "Camerino",
+              "kind": "halley",
+              "url": "https://www.halleyweb.com/c043007/zf/index.php/atti-amministrativi/determine",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "sanseverino_delibere",
+              "name": "San Severino Marche · Delibere",
+              "group": "San Severino",
+              "kind": "halley",
+              "url": "https://www.halleyweb.com/c043047/zf/index.php/atti-amministrativi/delibere",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "sanseverino_determine",
+              "name": "San Severino Marche · Determine",
+              "group": "San Severino",
+              "kind": "halley",
+              "url": "https://www.halleyweb.com/c043047/zf/index.php/atti-amministrativi/determine",
+              "priority": 1,
+              "enabled": true
+            },
+            {
+              "id": "camerino_unione_delibere",
+              "name": "Unione Montana Marca di Camerino · Delibere",
+              "group": "Entroterra",
+              "kind": "halley",
+              "url": "https://www.halleyweb.com/unmmdcmc/zf/index.php/atti-amministrativi/delibere",
+              "priority": 2,
+              "enabled": true
+            }
+          ]
+          JSONSOURCES
+      - name: Tentativo di controllo delle 11 fonti (incompletezza dichiarata)
+        shell: bash
+        run: python radar.py check
+      - name: Prepara il sito mobile con il report
+        shell: bash
+        run: |
+          mkdir -p site/data
+          cp index.html site/index.html
+          cp output/report.json site/data/report.json
+          cp output/fonti.csv site/data/fonti.csv
+          cp output/notizie.csv site/data/notizie.csv
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('site/data/report.json').read_text(encoding='utf-8'))
+          assert len(p['checks']) == 11, 'Numero fonti pilota diverso da 11'
+          assert sum(p['counts'].values()) == 11, 'Conteggi incoerenti'
+          assert all(x['state'] in ('GIALLO','ROSSO','GRIGIO','VERDE') for x in p['checks'])
+          print('Righe di controllo:',len(p['checks']),'Fonti:',p['counts'])
+          PY
+      - name: Aggiorna archivio anti-duplicati (soli documenti pubblici)
+        shell: bash
+        run: |
+          git config user.name 'radar-macerata-bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f data/radar.sqlite3
+          if ! git diff --cached --quiet; then
+            git commit -m 'Aggiorna archivio pubblico Radar Macerata [skip ci]'
+            git push || echo 'ARCHIVIO NON SALVATO: controllare il log del workflow; prossimo avvio senza deduplica persistente'
+          fi
+      - name: Configura pubblicazione GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Prepara pacchetto dell'app e delle ultime verifiche
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+      - name: Aggiorna pagina web dell'app
+        id: deployment
+        uses: actions/deploy-pages@v4
