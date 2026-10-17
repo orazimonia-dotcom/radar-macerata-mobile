@@ -1,0 +1,127 @@
+name: Radar Macerata - Diagnostica Matelica
+
+# Test separato: non modifica l'app pubblicata e non raccoglie dati privati.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verifica-albo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Installa browser diagnostico
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+
+      - name: Test browser dell'Albo di Matelica
+        shell: bash
+        run: |
+          cat > /tmp/matelica_test.py <<'PY'
+          import json
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.parse import urlparse
+          from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+          out = Path('diagnostica_matelica')
+          out.mkdir(parents=True, exist_ok=True)
+          report = {'timestamp_utc': datetime.now(timezone.utc).isoformat(),
+                    'note': 'Diagnostica con browser automatizzato; non aggira CAPTCHA/WAF e non certifica la copertura integrale.',
+                    'tests': [], 'errors': []}
+          param_url = 'https://www.comune.matelica.mc.it/EG0/EGHOMEPAGE.HBL?ss=1&F=MC09&en=eg848&freeze=1&P='
+          home_url = 'https://matelica.halleyegov.it/'
+          responses = []
+
+          def text_excerpt(page):
+              try:
+                  return (page.locator('body').inner_text(timeout=10000) or '')[:5500]
+              except Exception as e:
+                  return 'ERRORE TESTO: ' + str(e)[:350]
+
+          def snapshot(page, tag):
+              datum = {'fase': tag, 'url': page.url, 'titolo': '', 'testo_estratto': '',
+                       'albo_visibile': False, 'pubblicazione_1360': False,
+                       'pdf_visibili': [], 'link_rilevanti': []}
+              try: datum['titolo'] = page.title(timeout=10000)
+              except Exception: pass
+              datum['testo_estratto'] = text_excerpt(page)
+              datum['albo_visibile'] = bool(re.search(r'albo pretorio', datum['testo_estratto'], re.I))
+              datum['pubblicazione_1360'] = bool(re.search(r'pubblicazione\s+n\.?\s*1360', datum['testo_estratto'], re.I))
+              try:
+                  anchors = page.locator('a[href]').evaluate_all('els => els.map(a => ({label:(a.innerText||a.getAttribute("aria-label")||"").trim().slice(0,160),href:a.href})).filter(x=>x.label||x.href.toLowerCase().includes("pdf")).slice(0,300)')
+                  datum['link_rilevanti'] = [a for a in anchors if re.search(r'albo|pdf|convocaz|1360|EGHOMEPAGE|EG0|pubblicazione',a['label']+' '+a['href'],re.I)][:80]
+                  datum['pdf_visibili'] = [a for a in anchors if '.pdf' in a['href'].lower() or '.pdf' in a['label'].lower()][:40]
+              except Exception as e:
+                  datum['errore_link'] = str(e)[:350]
+              try: page.screenshot(path=str(out / (tag + '.png')), full_page=False, timeout=15000)
+              except Exception as e: datum['errore_screenshot'] = str(e)[:350]
+              try: (out / (tag + '.html')).write_text(page.content(), encoding='utf-8')
+              except Exception as e: datum['errore_html'] = str(e)[:350]
+              report['tests'].append(datum)
+              print(f"FASE {tag}: {datum['url']} | albo={datum['albo_visibile']} | n1360={datum['pubblicazione_1360']} | pdf={len(datum['pdf_visibili'])}", flush=True)
+              return datum
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              context = browser.new_context(viewport={'width': 412,'height': 915},
+                                            is_mobile=True, has_touch=True, locale='it-IT',
+                                            timezone_id='Europe/Rome', accept_downloads=True)
+              page = context.new_page()
+              page.on('response', lambda r: responses.append({'status':r.status,'url':r.url[:450],
+                         'content_type':r.headers.get('content-type','')[:85]}) if 'matelica' in r.url.lower() or '.pdf' in r.url.lower() else None)
+              try:
+                  page.goto(home_url, wait_until='domcontentloaded', timeout=45000)
+                  page.wait_for_timeout(3000)
+                  snapshot(page,'01_home')
+              except Exception as e: report['errors'].append({'fase':'home','errore':str(e)[:500]})
+
+              try:
+                  loc = page.get_by_text('Albo pretorio',exact=True)
+                  if loc.count():
+                      loc.first.click(timeout=12000)
+                      page.wait_for_timeout(3500)
+                      # Alcune versioni del portale aprono una scheda separata.
+                      active = context.pages[-1]
+                      active.wait_for_load_state('domcontentloaded',timeout=20000)
+                      snapshot(active,'02_dopo_click')
+                  else:
+                      report['errors'].append({'fase':'click_albo','errore':'Link Albo pretorio non presente nel DOM della home'})
+              except Exception as e: report['errors'].append({'fase':'click_albo','errore':str(e)[:500]})
+
+              page2 = context.new_page()
+              page2.on('response', lambda r: responses.append({'status':r.status,'url':r.url[:450],
+                         'content_type':r.headers.get('content-type','')[:85]}) if 'matelica' in r.url.lower() or '.pdf' in r.url.lower() else None)
+              try:
+                  page2.goto(param_url, wait_until='domcontentloaded',timeout=45000)
+                  page2.wait_for_timeout(4500)
+                  snapshot(page2,'03_albo_parametrizzato')
+                  # Non esegue click alla cieca: prova la scheda n. 1360 soltanto se compare.
+                  if page2.get_by_text(re.compile('CONVOCAZIONE CONSIGLIO COMUNALE',re.I)).count():
+                      page2.get_by_text(re.compile('CONVOCAZIONE CONSIGLIO COMUNALE',re.I)).first.click(timeout=15000)
+                      page2.wait_for_timeout(2500)
+                      snapshot(context.pages[-1],'04_scheda_convocazione')
+                  else:
+                      report['errors'].append({'fase':'scheda','errore':'Convocazione non individuata nella pagina attuale: non prova assenza dall\'archivio'})
+              except Exception as e: report['errors'].append({'fase':'albo_parametrizzato','errore':str(e)[:500]})
+              report['risposte_http'] = responses[-100:]
+              browser.close()
+
+          (out / 'risultati.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('DIAGNOSTICA TERMINATA. Fasi=',len(report['tests']),'errori=',len(report['errors']), flush=True)
+          print('Non equivale a un controllo completo dell\'albo.',flush=True)
+          PY
+          python /tmp/matelica_test.py
+
+      - name: Salva rapporto, schermate e codice HTML del test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostica-matelica
+          path: diagnostica_matelica/
+          if-no-files-found: warn
+          retention-days: 7
