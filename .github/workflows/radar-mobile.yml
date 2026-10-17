@@ -1,6 +1,6 @@
-name: Radar Macerata · verifica fonti pilota (v1.1)
+name: Radar Macerata · verifica fonti pilota (v1.2 con Albo Matelica)
 
-# PROTOTIPO: 11 fonti tentate, non copertura delle 80 fonti progettate. Revisione diagnostica 1.1.
+# PROTOTIPO: 11 fonti storiche + albo corrente Matelica da browser, non tutte le 80 fonti progettate.
 on:
   workflow_dispatch:
   schedule:
@@ -600,11 +600,319 @@ jobs:
       - name: Tentativo di controllo delle 11 fonti (incompletezza dichiarata)
         shell: bash
         run: python radar.py check
+      - name: Browser per l'albo pretorio Matelica
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Acquisisce l'albo corrente di Matelica con browser e PDF transitori
+        shell: bash
+        run: |
+          cat > matelica_albo.py <<'PYMATELICA'
+          #!/usr/bin/env python3
+          """Fonte aggiuntiva del Radar Macerata: Albo corrente del Comune di Matelica.
+          Navigazione pubblica con Playwright; acquisizione transitoria degli allegati PDF
+          (senza ripubblicare sul sito pubblico PDF che possono includere dati personali).
+          Paginazione e copertura sono dichiarate parziali finche' non dimostrate complete.
+          """
+          from __future__ import annotations
+
+          import hashlib
+          import io
+          import json
+          import re
+          import sqlite3
+          from datetime import date, timedelta
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          from datetime import datetime
+
+          from bs4 import BeautifulSoup
+          from pypdf import PdfReader
+          from playwright.sync_api import sync_playwright
+          from radar import connect, clean, dmy_to_iso, textscore, now
+
+          ROOT = Path(__file__).resolve().parent
+          SRC = {
+              'id': 'matelica_albo_corrente',
+              'name': 'Matelica · Albo pretorio (pubblicazioni correnti)',
+              'group': 'Matelica', 'kind': 'albo_browser',
+              'url': 'https://www.comune.matelica.mc.it/EG0/EGHOMEPAGE.HBL?ss=1&F=MC09&en=eg848&freeze=1&P=',
+              'priority': 1, 'enabled': True,
+          }
+          HOME = 'https://matelica.halleyegov.it/'
+          MAX_PAGES = 12  # limite esplicito; non coincide necessariamente con la copertura integrale
+          MAX_PDF_CHECKS = 12  # riduce carico sul portale; gli altri restano INDICE
+
+
+          def attach_source():
+              f = ROOT / 'sources.json'
+              sources = json.loads(f.read_text(encoding='utf-8'))
+              if not any(s.get('id') == SRC['id'] for s in sources):
+                  sources.append(SRC)
+                  f.write_text(json.dumps(sources, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+              return sources
+
+
+          def parse_cards(html, page_num):
+              soup = BeautifulSoup(html, 'html.parser')
+              cards = soup.select('div.cmp-card')
+              rows = []
+              for c in cards:
+                  # Mai derivare l'identita' dalla posizione nel DOM soltanto.
+                  node = c.select_one('.category-top span')
+                  title_node = c.select_one('a[onclick^="MC02("]')
+                  if not node or not title_node:
+                      continue
+                  pub_num = re.search(r'\bpubblicazione\s+n\.?\s*(\d{1,7})\b', clean(node.get_text(' ', strip=True)), re.I)
+                  title = clean(title_node.get_text(' ', strip=True))
+                  onclick = title_node.get('onclick', '')
+                  if not pub_num or not re.fullmatch(r"MC02\(['\"]?\d+['\"]?\)", onclick.strip()) or len(title) < 7:
+                      continue
+                  txt = clean(c.get_text(' ', strip=True))
+                  pub_date = re.search(r'\bPubblicazione\s+dal\s+([0-3]?\d[-/.][01]?\d[-/.]20\d\d)', txt, re.I)
+                  pub_iso = dmy_to_iso(pub_date.group(1)) if pub_date else None
+                  act_date = re.search(r'\bAtto\s+n\.?\s*(\d+)\s+del\s+([0-3]?\d[-/.][01]?\d[-/.]20\d\d)', txt, re.I)
+                  # Anomalie come 'Atto n. del 31-10-2026' NON sono data atto.
+                  num = pub_num.group(1)
+                  year = pub_iso[:4] if pub_iso else str(now().year)
+                  kind = re.search(r'\bTipo:\s*(.*?)\s+Atto\s+n', txt, re.I)
+                  rows.append({
+                      'pub_num': num, 'year': year, 'page_num': page_num,
+                      'title': f'[Albo n. {num}/{year}] {title}',
+                      'original_title': title,
+                      'publication_date': pub_iso,
+                      'act_date': dmy_to_iso(act_date.group(2)) if act_date else None,
+                      'act_number': act_date.group(1) if act_date else None,
+                      'type': clean(kind.group(1)) if kind else '',
+                      'url': SRC['url'],
+                  })
+              pg = soup.select_one('.pagination .page-item.active')
+              match = re.search(r'Pagina\s+(\d+)\s+di\s+(\d+)', clean(soup.get_text(' ', strip=True)), re.I)
+              total = int(match.group(2)) if match else None
+              return rows, total, len(cards)
+
+
+          def open_index(page):
+              response = page.goto(SRC['url'], wait_until='domcontentloaded', timeout=45000)
+              page.locator('div.cmp-card a[onclick^="MC02("]').first.wait_for(timeout=20000)
+              if response and response.status >= 400:
+                  raise RuntimeError('HTTP '+str(response.status))
+
+
+          def go_to_page(page, index):
+              open_index(page)
+              for n in range(2, index+1):
+                  card = page.locator('div.cmp-card .category-top span').first
+                  first = clean(card.inner_text(timeout=10000))
+                  page.locator('a[onclick="PMC02()"]', has_text='Pagina successiva').first.click(timeout=18000)
+                  page.wait_for_function(
+                      "prev => {const e=document.querySelector('div.cmp-card .category-top span');return e && e.textContent.trim()!==prev;}",
+                      arg=first, timeout=15000,
+                  )
+                  print('Matelica pagina navigata', n, flush=True)
+
+
+          def pdf_details(ctx, row):
+              """Scheda verificata, poi PDF scaricato, letto in memoria e scartato.
+              I link basati su sessioni/form POST non vengono spacciati per permanenti.
+              """
+              tab = ctx.new_page()
+              result = {'level': 'INDICE', 'document_url': '', 'document_text': '',
+                        'detail_error': 'Scheda non verificata'}
+              try:
+                  go_to_page(tab, row['page_num'])
+                  # Corrispondenza esatta del numero pubblicazione prima del click.
+                  cards = tab.locator('div.cmp-card')
+                  found = False
+                  for i in range(cards.count()):
+                      card = cards.nth(i)
+                      ctext = clean(card.locator('.category-top span').inner_text())
+                      m = re.search(r'pubblicazione\s+n\.?\s*(\d+)\b', ctext, re.I)
+                      if m and m.group(1) == row['pub_num']:
+                          card.locator('a[onclick^="MC02("]').first.click(timeout=15000)
+                          found = True
+                          break
+                  if not found: raise RuntimeError('Numero pubblicazione non trovato nella pagina prevista')
+                  tab.get_by_text(re.compile(r'Pubblicazione\s+n\.?\s*'+re.escape(row['pub_num'])+r'/'+row['year'], re.I)).first.wait_for(timeout=16000)
+                  content = clean(tab.locator('body').inner_text(timeout=12000))
+                  if clean(row['original_title']).casefold() not in content.casefold():
+                      raise RuntimeError('Titolo della scheda diverso da quello dell\'indice')
+                  result.update(level='SCHEDA', detail_error='PDF non scaricato o non leggibile')
+                  links = tab.locator('a[onclick^="MC98("]')
+                  if not links.count():
+                      result['detail_error']='Scheda consultata; nessun allegato PDF selezionabile'
+                      return result
+                  # Verificare gli allegati al piu' due, preferendo quello principale.
+                  for j in range(min(2, links.count())):
+                      a = links.nth(j)
+                      label = clean(a.inner_text(timeout=5000))
+                      if not re.search(r'\.pdf\b',label,re.I):
+                          continue
+                      try:
+                          with tab.expect_download(timeout=16000) as info:
+                              a.click(timeout=12000)
+                          download = info.value
+                          tmp_path = download.path()  # file temporaneo di Playwright, non pubblico
+                          raw = Path(tmp_path).read_bytes()
+                          if not raw.startswith(b'%PDF') or len(raw) < 500 or len(raw) > 15_000_000:
+                              result['detail_error']='Allegato scaricato ma firma/dimensione PDF non valida'
+                              continue
+                          reader = PdfReader(io.BytesIO(raw))
+                          if len(reader.pages) > 40:
+                              result['detail_error']='PDF oltre 40 pagine; testo non integralmente esaminato'
+                              continue
+                          excerpt = clean(' '.join(p.extract_text() or '' for p in reader.pages))
+                          if len(excerpt) <= 180:
+                              result['detail_error']='PDF scaricato ma testo non leggibile (forse scansione)'
+                              continue
+                          # Niente PDF ripubblicato: può includere dati personali.
+                          result.update(level='DOCUMENTO', document_url='',
+                                        document_text=f'PDF testuale letto ({len(reader.pages)} pagine, SHA256 {hashlib.sha256(raw).hexdigest()[:16]}); documento accessibile tramite scheda ufficiale della pubblicazione n. {row["pub_num"]}.',
+                                        detail_error='')
+                          print('MATELICA PDF TESTO',row['pub_num'],len(raw),'bytes',len(reader.pages),'pagine',flush=True)
+                          return result
+                      except Exception as ex:
+                          result['detail_error']='Download PDF non concluso: '+str(ex)[:120]
+                  return result
+              except Exception as ex:
+                  result['detail_error']='Scheda non verificata: '+str(ex)[:140]
+                  return result
+              finally:
+                  tab.close()
+
+
+          def main():
+              attach_source()
+              clock=now(); stamp=clock.isoformat(timespec='seconds')
+              db=connect(ROOT/'data'/'radar.sqlite3')
+              known=db.execute('SELECT COUNT(*) FROM items WHERE source_id=?',(SRC['id'],)).fetchone()[0]
+              all_rows=[]; pages_examined=0; total_pages=None; last_error=None; complete_pages=False
+              validated_docs=0; inspected_sheets=0
+              try:
+                  with sync_playwright() as p:
+                      browser=p.chromium.launch(headless=True)
+                      ctx=browser.new_context(accept_downloads=True,locale='it-IT',viewport={'width':1200,'height':900})
+                      page=ctx.new_page()
+                      try:
+                          # La visita iniziale conserva il percorso pubblico dell'ente.
+                          page.goto(HOME, wait_until='domcontentloaded', timeout=30000)
+                          open_index(page)
+                          found=set()
+                          for i in range(1,MAX_PAGES+1):
+                              rows,total,card_count = parse_cards(page.content(),i)
+                              if not rows:
+                                  last_error=f'Pagina {i}: nessuna scheda interpretabile (HTML cambiato?)'
+                                  break
+                              if total_pages is None: total_pages=total
+                              for row in rows:
+                                  key=(row['year'],row['pub_num'])
+                                  if key not in found:
+                                      found.add(key);all_rows.append(row)
+                              pages_examined=i
+                              print('MATELICA pagina',i,'letti',len(rows),'card',card_count,'totale riferito',total_pages,flush=True)
+                              if len(rows)!=card_count:
+                                  last_error=f'Pagina {i}: {card_count} schede visibili, {len(rows)} estratte'
+                              if total_pages is not None and i>=total_pages:
+                                  complete_pages=True
+                                  break
+                              if not page.locator('a[onclick="PMC02()"]',has_text='Pagina successiva').count():
+                                  # Se il portale non dichiara le pagine, non inventare copertura totale.
+                                  complete_pages=(total_pages is not None and total_pages==i)
+                                  break
+                              first=clean(page.locator('div.cmp-card .category-top span').first.inner_text())
+                              page.locator('a[onclick="PMC02()"]', has_text='Pagina successiva').first.click(timeout=20000)
+                              page.wait_for_function(
+                                  "prev => {const e=document.querySelector('div.cmp-card .category-top span');return e && e.textContent.trim()!==prev;}",
+                                  arg=first,timeout=16000)
+                          # Schede selezionate: massima priorita' alle pubblicazioni recenti e interessanti.
+                          ordered=sorted(all_rows,key=lambda x: (x['publication_date'] or '',textscore(x['original_title'],'Matelica')[1]),reverse=True)
+                          target=[]
+                          for row in ordered:
+                              uid=hashlib.sha256((SRC['id']+'|'+row['year']+'|'+row['pub_num']).encode()).hexdigest()
+                              old=db.execute('SELECT evidence_level FROM items WHERE uid=?',(uid,)).fetchone()
+                              if old and old['evidence_level']=='DOCUMENTO':continue
+                              if len(target)<MAX_PDF_CHECKS:target.append(row)
+                          details={}
+                          for row in target:
+                              key=(row['year'],row['pub_num'])
+                              item=pdf_details(ctx,row)
+                              details[key]=item
+                              inspected_sheets += item['level']!='INDICE'
+                              validated_docs += item['level']=='DOCUMENTO'
+                      except Exception as ex:
+                          last_error=str(ex)[:270]
+                          print('MATELICA ERRORE NAVIGAZIONE:',last_error,flush=True)
+                          details=locals().get('details',{})
+                      finally:
+                          browser.close()
+              except Exception as ex:
+                  last_error='Browser indisponibile: '+str(ex)[:250]
+                  details={}
+              new=0;dates=[]
+              for row in all_rows:
+                  uid=hashlib.sha256((SRC['id']+'|'+row['year']+'|'+row['pub_num']).encode()).hexdigest()
+                  existing=db.execute('SELECT uid,evidence_level,excerpt,detail_error,document_url FROM items WHERE uid=?',(uid,)).fetchone()
+                  prev_level=existing['evidence_level'] if existing else None
+                  evidence=details.get((row['year'],row['pub_num']))
+                  if not evidence and existing:
+                      evidence={'level':prev_level,'document_url':existing['document_url'],'document_text':existing['excerpt'],'detail_error':existing['detail_error']}
+                  if not evidence:
+                      evidence={'level':'INDICE','document_url':'','document_text':'',
+                                'detail_error':'Pubblicazione indicizzata; documento non ancora esaminato (limite di 12 schede per controllo)'}
+                  pdate=row['publication_date']
+                  if pdate:dates.append(pdate)
+                  if existing:novelty='GIÀ CENSITO'
+                  elif known==0:novelty='PRIMA RILEVAZIONE'
+                  elif not pdate:novelty='DATA PUBBLICAZIONE DA VERIFICARE'
+                  elif pdate<clock.date().isoformat():novelty='RETROSPETTIVO PER '+pdate
+                  else:novelty='NUOVO'
+                  theme,score=textscore(row['original_title'],'Matelica')
+                  db.execute('''INSERT INTO items(uid,source_id,title,url,first_seen,last_seen,publication_date,act_date,act_number,theme,score,evidence_level,document_url,excerpt,novelty,detail_error)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(uid) DO UPDATE SET last_seen=excluded.last_seen,publication_date=COALESCE(excluded.publication_date,items.publication_date),act_date=COALESCE(excluded.act_date,items.act_date),act_number=COALESCE(excluded.act_number,items.act_number),evidence_level=excluded.evidence_level,document_url=excluded.document_url,excerpt=excluded.excerpt,novelty=excluded.novelty,detail_error=excluded.detail_error''',
+                       (uid,SRC['id'],row['title'],row['url'],stamp,stamp,pdate,row['act_date'],row['act_number'],theme,score,evidence['level'],'',evidence['document_text'],novelty,evidence['detail_error']))
+                  new+=not bool(existing)
+              latest=max(dates) if dates else None
+              if not all_rows:
+                  state='ROSSO' if last_error else 'GIALLO'
+              else:
+                  state='GIALLO'  # Non dichiarare VERDE finché tutti i PDF e gli atti non sono coperti.
+              note=f'Controllo con browser: {pages_examined}/{total_pages or "?"} pagine, {len(all_rows)} pubblicazioni, {inspected_sheets} schede esaminate, {validated_docs} PDF testuali letti. '
+              if complete_pages and not last_error:
+                  note+='Elenco delle pubblicazioni attualmente visibili attraversato; allegati verificati solo a campione.'
+              else:
+                  note+='CONTROLLO INCOMPLETO: paginazione o accesso non integralmente verificati.'
+              if last_error:note+=' Problema: '+last_error
+              db.execute('INSERT INTO checks(source_id,checked_at,state,count,new_count,latest_date,note,url) VALUES(?,?,?,?,?,?,?,?)',
+                         (SRC['id'],stamp,state,len(all_rows),new,latest,note,SRC['url']))
+              db.commit();db.close()
+              print('MATELICA RISULTATO',state,'pubblicazioni',len(all_rows),'nuove',new,'PDF',validated_docs,'pagine',pages_examined,'errore',last_error,flush=True)
+
+
+          if __name__=='__main__':
+              main()
+          PYMATELICA
+          python matelica_albo.py
+          python radar.py report
       - name: Prepara il sito mobile con il report
         shell: bash
         run: |
           mkdir -p site/data
           cp index.html site/index.html
+          # Il messaggio statico dell'app fa riferimento al nuovo numero di fonti.
+          python - <<'PYAPP'
+          from pathlib import Path
+          p=Path('site/index.html');t=p.read_text(encoding='utf-8')
+          t=t.replace('11 configurate su 80','12 configurate su 80')
+          t=t.replace('Il pilota interroga 11 raccolte','Il pilota interroga 12 raccolte')
+          t=t.replace('Le 11 sorgenti sono configurate','Le 12 sorgenti sono configurate')
+          t=t.replace('Le altre 69 dell’inventario storico','Le altre 68 dell’inventario storico')
+          # Sui documenti Halley Matelica l'URL del download e' legato alla sessione.
+          marker=" if(x.document_url){const pdf=link('Apri PDF ↗',x.document_url);if(pdf)actions.append(pdf);}"
+          addon=" if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&!x.document_url)add(card,'div','card-flag','PDF letto dal Radar ma senza link pubblico permanente. Per scaricarlo, apri la fonte e cerca il numero di pubblicazione riportato nel titolo.');"
+          if marker in t:t=t.replace(marker,marker+addon)
+          p.write_text(t,encoding='utf-8')
+          PYAPP
           cp output/report.json site/data/report.json
           cp output/fonti.csv site/data/fonti.csv
           cp output/notizie.csv site/data/notizie.csv
@@ -612,8 +920,8 @@ jobs:
           import json
           from pathlib import Path
           p=json.loads(Path('site/data/report.json').read_text(encoding='utf-8'))
-          assert len(p['checks']) == 11, 'Numero fonti pilota diverso da 11'
-          assert sum(p['counts'].values()) == 11, 'Conteggi incoerenti'
+          assert len(p['checks']) == 12, 'Numero fonti pilota diverso da 12'
+          assert sum(p['counts'].values()) == 12, 'Conteggi incoerenti'
           assert all(x['state'] in ('GIALLO','ROSSO','GRIGIO','VERDE') for x in p['checks'])
           print('Righe di controllo:',len(p['checks']),'Fonti:',p['counts'])
           PY
