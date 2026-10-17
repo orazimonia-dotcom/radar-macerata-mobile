@@ -1,6 +1,6 @@
-name: Radar Macerata · verifica fonti pilota
+name: Radar Macerata · verifica fonti pilota (v1.1)
 
-# PROTOTIPO: 11 fonti tentate, non copertura delle 80 fonti progettate.
+# PROTOTIPO: 11 fonti tentate, non copertura delle 80 fonti progettate. Revisione diagnostica 1.1.
 on:
   workflow_dispatch:
   schedule:
@@ -38,7 +38,7 @@ jobs:
         run: |
           cat > radar.py <<'PYRADAR'
           #!/usr/bin/env python3
-          """Radar Macerata v1.0: monitoraggio documentale, audit e dashboard locale.
+          """Radar Macerata v1.1: monitoraggio documentale, audit e dashboard locale.
           Usa solo siti pubblici e non tenta di aggirare sistemi di accesso.
           """
           from __future__ import annotations
@@ -216,13 +216,64 @@ jobs:
                       ctype=r.headers.get('content-type','').lower()
                       if 'text/html' not in ctype and 'application/xhtml' not in ctype and not r.text.lstrip().startswith(('<!DOCTYPE','<html')):
                           raise ValueError('risposta non HTML: '+ctype)
-                      if any(x in r.text.lower() for x in ('access denied','captcha','attention required!','error 403 forbidden')):
-                          raise ValueError('possibile blocco o CAPTCHA')
+                      # Non cercare la parola CAPTCHA nell'intero HTML: e' comune nei plugin
+                      # di contatto anche quando l'albo e' perfettamente consultabile.
+                      soup=BeautifulSoup(r.text,'html.parser')
+                      title=clean((soup.title or soup).get_text(' ',strip=True)).casefold()[:200]
+                      if any(title.startswith(x) for x in ('access denied', 'just a moment', 'attention required', '403 forbidden', 'captcha required')):
+                          raise ValueError('schermata di accesso negato/CAPTCHA; HTTP '+str(r.status_code))
                       return r.text,None,r.url
                   except (requests.RequestException,ValueError) as e:
                       error=f'{type(e).__name__}: {str(e)[:190]}'
                       if i<tries-1:time.sleep(1+i)
               return None,error,None
+          
+          
+          def sibillini_pages(session,source,first_html,clock,max_pages=8):
+              """Apre le pagine dell'albo in modo sequenziale, senza fingere copertura.
+              La sequenza resta GIALLO quando termina il limite o una pagina fallisce.
+              """
+              allrows=[]
+              seen=set()
+              url=source['url'].rstrip('/')+'/'
+              page=first_html
+              visited=[]
+              reason=None
+              limit_date=(clock.date()-timedelta(days=15)).isoformat()
+              for number in range(1,max_pages+1):
+                  if number>1:
+                      target=url+'page/'+str(number)+'/'
+                      page,err,_=get_html(session,target,tries=2,timeout=12)
+                      if page is None:
+                          reason='Pagina '+str(number)+' non disponibile: '+str(err)
+                          break
+                  rows=parse_index(source,page)
+                  # Verifica anche gli ID degli atti visualizzati ma non letti dal parser.
+                  published=set(re.findall(r'\bN\.?\s*(\d{1,5}/20\d\d-S)\b',clean(BeautifulSoup(page,'html.parser').get_text(' ',strip=True)),re.I))
+                  if published and len(rows)<len(published):
+                      reason='pagina '+str(number)+': '+str(len(published))+' registrazioni ma '+str(len(rows))+' schede estratte'
+                  visited.append(number)
+                  for row in rows:
+                      if row['url'] not in seen:
+                          seen.add(row['url'])
+                          allrows.append(row)
+                  dates=[r['publication_date'] for r in rows if r['publication_date']]
+                  # Solo un controllo delta: non equivalente alla ricostruzione storica completa.
+                  soup=BeautifulSoup(page,'html.parser')
+                  nexturl=url+'page/'+str(number+1)+'/'
+                  has_next=any((urljoin(url,a.get('href','')).rstrip('/')==nexturl.rstrip('/'))
+                               for a in soup.find_all('a',href=True))
+                  if not has_next:
+                      if not dates:
+                          reason=reason or 'nessuna data di pubblicazione leggibile'
+                      break
+                  if dates and max(dates)<limit_date:
+                      # Le pagine piu' recenti vengono attraversate, non tutto lo storico.
+                      reason=reason or 'verificato solo intervallo recente fino alla pagina '+str(number)
+                      break
+                  if number==max_pages:
+                      reason=reason or 'raggiunto limite '+str(max_pages)+' pagine, altre pagine ancora presenti'
+              return allrows,reason,len(visited)
           
           
           def details(session,article):
@@ -301,7 +352,13 @@ jobs:
                   if content is None:
                       res=('ROSSO',0,0,None,'CONTROLLO INCOMPLETO: '+str(error))
                   else:
-                      parsed=parse_index(source,content)
+                      coverage_issue=None
+                      pages_examined=1
+                      if source['kind']=='sibillini':
+                          parsed,coverage_issue,pages_examined=sibillini_pages(session,source,content,clock)
+                          print('Paginazione Sibillini: pagine='+str(pages_examined)+' schede='+str(len(parsed))+' limite='+str(coverage_issue),flush=True)
+                      else:
+                          parsed=parse_index(source,content)
                       if not parsed:
                           res=('GIALLO',0,0,None,'CONTROLLO INCOMPLETO: pagina raggiunta ma nessun atto estratto (HTML cambiato, indice vuoto o limite di accesso).')
                       else:
@@ -334,10 +391,11 @@ jobs:
                           # Se indice solo e nessuna data, controllo incompleto anziché verde.
                           fresh=bool(latest and latest >= (clock.date()-timedelta(days=14)).isoformat())
                           partial=index_partial(source,content)
-                          if False: res=('VERDE',len(parsed),new,latest,'Indice integralmente verificato')
-                          else:
-                              reason='indice senza date leggibili' if not latest else ('indice apparentemente fermo a '+latest if not fresh else ('paginazione o archivio non integralmente acquisiti' if partial else 'schede non consultabili'))
-                              res=('GIALLO',len(parsed),new,latest,'CONTROLLO INCOMPLETO: '+reason)
+                          # Una cronologia completa e verificabile non e' ancora garantita
+                          # per Halley, per le pagine di notizie o per le tabelle AJAX.
+                          # GIALLO resta corretto anche se abbiamo trovato alcuni atti.
+                          reason=coverage_issue or ('indice senza date leggibili' if not latest else ('indice apparentemente fermo a '+latest if not fresh else ('paginazione o archivio non integralmente acquisiti' if partial else 'completezza/atti allegati non ancora certificati')))
+                          res=('GIALLO',len(parsed),new,latest,'CONTROLLO INCOMPLETO: '+reason)
               db.execute('INSERT INTO checks(source_id,checked_at,state,count,new_count,latest_date,note,url) VALUES(?,?,?,?,?,?,?,?)',
                          (source['id'],stamp,*res,source['url']))
               db.commit()
@@ -368,7 +426,7 @@ jobs:
                   x['old']=bool(x['publication_date'] and x['publication_date']<threshold)
                   x['ready_for_article']=bool(x['evidence_level']=='DOCUMENTO' and x['score']>=48 and not x['old'])
                   x['link_proof']=x['document_url'] if x['document_url'] else x['url']
-              payload={'generated':clock.strftime('%d/%m/%Y %H:%M %Z'), 'generated_iso':clock.isoformat(), 'counts':counts,'checks':[dict(x) for x in checks],'items':items,'warning':'Un sito non raggiunto non significa assenza di atti. Il controllo è locale e non costituisce un servizio online attivo.'}
+              payload={'generated':clock.strftime('%d/%m/%Y %H:%M %Z'), 'generated_iso':clock.isoformat(), 'counts':counts,'checks':[dict(x) for x in checks],'items':items,'warning':'Prototipo: un controllo parziale o non raggiunto non equivale ad assenza di atti. Verificare ogni documento sulla fonte originale.'}
               (OUT/'report.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
               with (OUT/'notizie.csv').open('w',newline='',encoding='utf-8-sig') as f:
                   fields=['publication_date','act_date','source_name','title','theme','score','evidence_level','novelty','url','document_url','detail_error']
