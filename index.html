@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="it">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+ <meta name="theme-color" content="#102336">
+ <meta name="description" content="Radar Macerata: il taccuino mobile degli atti pubblici, con fonti verificabili e controllo degli errori.">
+ <meta name="apple-mobile-web-app-capable" content="yes">
+ <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+ <style>
+:root{--ink:#102336;--muted:#647480;--bg:#f5f7f8;--surface:#fff;--line:#dee5e9;--orange:#e7683c;--warm:#fff5ed;--green:#28845e;--gold:#c28824;--red:#c44d42}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}button,input,textarea,select{font:inherit}button{cursor:pointer}a{color:var(--ink)}.wrap{width:min(100% - 36px,880px);margin:auto}.top{background:var(--ink);color:#fff;border-radius:0 0 28px 28px;padding:22px 0 31px}.top-row{display:flex;justify-content:space-between;align-items:center}.brand{display:flex;gap:13px;align-items:center}.brand-symbol{display:grid;place-items:center;background:#e7683c;color:#fff;border-radius:13px;width:47px;height:47px;font-size:35px;font-weight:700;line-height:1}.overline{display:block;font-size:9px;letter-spacing:2.1px;color:#b8c8ce;font-weight:750}h1{font-size:24px;letter-spacing:-.9px;line-height:1.2;margin:2px 0}h1 span{font-weight:350;margin-left:4px}.icon-btn{border:1px solid #476074;background:#203a4e;color:#fff;border-radius:14px;font-size:26px;line-height:1;width:47px;height:47px}.icon-btn:active{transform:rotate(20deg)}.hero{padding-top:39px}.tag{display:inline-flex;gap:7px;align-items:center;font-size:10px;color:#ffd2c1;letter-spacing:1.3px;font-weight:800}.pulse{width:7px;height:7px;border-radius:50%;background:#ef946f}.headline{font-size:clamp(29px,5vw,40px);font-weight:800;letter-spacing:-1.1px;line-height:1.1;max-width:440px;margin:13px 0 14px}.headline em{font-style:normal;color:#f29171}.hero-sub{max-width:490px;color:#c5d4de;font-size:14px;line-height:1.65}.sync-row{font-size:12px;color:#c9d2d8;margin-top:23px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}.sync-row span:last-child{color:#f2aa82}.notice{margin:21px 0 18px;background:#fff5e7;color:#6d4d17;border-left:4px solid #e5ad56;padding:13px 14px;border-radius:10px;font-size:12px;line-height:1.6}.notice.error{background:#fbece9;border-left-color:var(--red);color:#7d2e29}.notice.success{background:#eef8f2;border-left-color:var(--green);color:#316247}.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.metric{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:15px 11px}.metric strong{font-weight:800;font-size:29px;line-height:1.2;display:block}.metric span{color:var(--muted);font-size:11px;font-weight:650}.page{padding-bottom:12px}.section-head{display:flex;gap:10px;justify-content:space-between;align-items:flex-end;margin:32px 0 16px}.eyebrow{font-size:10px;letter-spacing:1.5px;font-weight:850;color:#b45437;margin:0 0 4px}h2{font-size:25px;margin:0;letter-spacing:-.7px;line-height:1.25}.pill{display:inline-block;white-space:nowrap;background:#edf1f2;padding:5px 10px;color:#486072;font-size:11px;font-weight:700;border-radius:30px}.search-wrap{display:flex;align-items:center;gap:7px;background:#fff;border:1px solid #d7e0e5;box-shadow:0 2px 6px #0b264009;padding:0 12px;border-radius:13px}.search-wrap span{font-size:24px;color:#7a8d9d}.search-wrap input{border:0;min-height:50px;flex:1;min-width:0;outline:none;background:transparent;font-size:14px}.chip-row,.source-filters{display:flex;overflow:auto;gap:8px;padding:14px 0 3px;scrollbar-width:none}.chip{border:1px solid #d9e2e6;background:#fff;color:#496070;white-space:nowrap;border-radius:30px;font-size:12px;padding:9px 15px;font-weight:750}.chip.selected{border-color:var(--ink);background:var(--ink);color:#fff}.control-row{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:14px}.control-row label{font-size:11px;color:var(--muted);font-weight:750}.control-row select{display:block;margin-top:6px;border:1px solid #d9e2e6;border-radius:12px;padding:12px 11px;background:#fff;color:var(--ink);width:100%;font-size:13px}.caption{font-size:11px;color:#778590;margin:12px 0 16px}.cards{display:grid;gap:13px}.card,.source-card,.info-card{background:#fff;border:1px solid #dce4e8;border-radius:18px;padding:18px;box-shadow:0 2px 10px #15304008}.card-top{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11px;color:var(--muted);font-weight:730}.badge{display:inline-flex;align-items:center;border-radius:20px;background:#e9eff4;color:#35566a;padding:5px 9px;font-size:10px;font-weight:800}.badge.DOCUMENTO{background:#e5f5ed;color:#21744c}.badge.SCHEDA{background:#fff1db;color:#996525}.badge.INDICE{background:#e9eff4;color:#516b7b}.badge.ROSSO{background:#f9e6e3;color:#b04539}.badge.GIALLO{background:#fff0d7;color:#9d741f}.badge.VERDE{background:#e5f6e9;color:#267c54}.badge.GRIGIO{background:#eaedef;color:#536471}.card h3{font-size:16px;line-height:1.5;margin:12px 0 11px;letter-spacing:-.14px}.source-title{font-size:12px;color:#536875;margin-top:4px}.card-data{display:flex;gap:7px;flex-wrap:wrap;color:#6d7e89;font-size:11px;margin-bottom:11px}.card-flag{font-size:11px;background:#f8f1e8;color:#77542b;padding:9px 10px;border-radius:9px;line-height:1.5;margin-bottom:11px}.tag-score{font-weight:750;color:#a95b3e}.action-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px;align-items:center}.action{padding:9px 11px;border-radius:10px;text-decoration:none;font-size:12px;font-weight:800;border:1px solid #d8e1e6;display:inline-flex;justify-content:center;align-items:center;min-height:39px;background:#fff}.action.primary{background:#132d41;color:#fff;border-color:#132d41}.action.saved{background:#ffe5db;color:#8e3f26;border-color:#f5bc9d}.action:disabled{opacity:.6}.empty{color:#637784;background:#fff;padding:22px;border-radius:15px;border:1px dashed #cbd7de;font-size:14px;text-align:center}.info{color:#617482;font-size:13px;line-height:1.7}.source-card{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start}.source-card h3{font-size:15px;margin:5px 0}.source-card p{margin:5px 0;color:#617482;font-size:12px;line-height:1.55;overflow-wrap:anywhere}.source-card .action{grid-column:1/-1;justify-self:start}.info-card{margin:12px 0}.info-card h3{margin:0 0 7px;font-size:15px}.info-card p{margin:0;font-size:13px;line-height:1.7;color:#556b79}.small-btn{border:1px solid #d5dfe5;background:#fff;border-radius:12px;padding:11px 12px;font-size:12px;font-weight:750}.note-label{display:block;font-size:11px;color:#516775;font-weight:750;margin-top:12px}.note-text{display:block;width:100%;padding:10px;margin-top:6px;min-height:80px;border:1px solid #d8e2e8;border-radius:9px;resize:vertical;font-size:13px}.footer{font-size:11px;color:#778794;text-align:center;line-height:1.7;margin:33px 0 20px}.hidden{display:none!important}.bottom-nav{position:fixed;bottom:0;left:0;right:0;z-index:10;background:rgba(255,255,255,.97);backdrop-filter:blur(12px);border-top:1px solid #dce5ea;display:flex;justify-content:space-around;padding:7px 7px calc(8px + env(safe-area-inset-bottom));box-shadow:0 -5px 20px #09233414}.bottom-nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:0;border:0;background:transparent;color:#758592;font-size:26px;line-height:1.2;padding:5px;border-radius:10px}.bottom-nav button small{font-size:10px;font-weight:700}.bottom-nav button.active{color:#d76642;background:#fff3ee}main{padding-bottom:94px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #ed9e6c;outline-offset:3px}
+@media(max-width:410px){.wrap{width:calc(100% - 28px)}.metric{padding:12px 8px}.metric strong{font-size:24px}.metric span{font-size:10px}.headline{font-size:33px}.card,.source-card{padding:15px}}@media(min-width:700px){.cards{grid-template-columns:1fr 1fr}.bottom-nav{left:50%;transform:translateX(-50%);width:min(100%,600px);border-left:1px solid #e1e6e8;border-right:1px solid #e1e6e8;border-radius:16px 16px 0 0}.headline{max-width:750px}.hero-sub{max-width:680px}}
+
+ </style>
+ <title>Radar Macerata · Mobile</title>
+</head>
+<body>
+ <div id="app">
+  <header class="top">
+   <div class="top-row wrap">
+    <div class="brand"><span class="brand-symbol" aria-hidden="true">◎</span><div><span class="overline">OSSERVATORIO DOCUMENTALE</span><h1>Radar<span>Macerata</span></h1></div></div>
+    <button id="refresh-btn" class="icon-btn" type="button" title="Ricarica dati pubblicati" aria-label="Ricarica dati pubblicati">↻</button>
+   </div>
+   <div class="wrap hero">
+    <span class="tag"><span class="pulse" aria-hidden="true"></span> VERSIONE MOBILE · PILOTA</span>
+    <p class="headline">Le notizie nascono <em>dagli atti.</em></p>
+    <p class="hero-sub">Atti, documenti e piste dai comuni del Maceratese. Le fonti non accessibili vengono segnalate, mai nascoste.</p>
+    <div class="sync-row"><span id="sync-label" aria-live="polite">Caricamento del bollettino…</span><span id="sync-status">·</span></div>
+   </div>
+  </header>
+  <main class="wrap">
+   <section id="state-banner" class="notice" role="status"><b>Attenzione:</b> il monitoraggio è sperimentale. I risultati non sostituiscono la lettura degli atti originali.</section>
+   <section class="metric-grid" aria-label="Riepilogo" id="stats">
+     <div class="metric"><strong>—</strong><span>Atti in archivio</span></div>
+     <div class="metric"><strong>—</strong><span>Fonti verdi</span></div>
+     <div class="metric"><strong>—</strong><span>Fonti parziali</span></div>
+     <div class="metric"><strong>—</strong><span>Fonti bloccate</span></div>
+   </section>
+   <section class="page" id="page-feed">
+    <div class="section-head"><div><p class="eyebrow">TACCUINO GIORNALISTICO</p><h2>Notizie e piste</h2></div><span class="pill" id="feed-total">—</span></div>
+    <div class="search-wrap"><span aria-hidden="true">⌕</span><input type="search" id="search" placeholder="Cerca località, importi, temi…" aria-label="Cerca fra gli atti"></div>
+    <div class="chip-row" role="group" aria-label="Tipo di segnalazione">
+     <button class="chip selected" type="button" data-filter="all" aria-pressed="true">Tutte</button>
+     <button class="chip" type="button" data-filter="new" aria-pressed="false">Novità</button>
+     <button class="chip" type="button" data-filter="docs" aria-pressed="false">Con documento</button>
+    </div>
+    <div class="control-row"><label>Territorio<select id="territory"><option value="">Tutti</option></select></label><label>Priorità<select id="priority"><option value="30">Da 30/100</option><option value="0">Qualsiasi</option><option value="45">Da 45/100</option><option value="60">Da 60/100</option></select></label></div>
+    <p class="caption" id="filter-note">Punteggio indicativo, non verifica di veridicità.</p>
+    <div id="feed" class="cards" aria-live="polite"><div class="empty">Caricamento…</div></div>
+   </section>
+   <section class="page hidden" id="page-sources">
+    <div class="section-head"><div><p class="eyebrow">CONTROLLO DELLE FONTI</p><h2>Accessi e guasti</h2></div><span class="pill">11 configurate su 80</span></div>
+    <p class="info">Il pilota interroga 11 raccolte, non tutti gli 80 archivi dello storico. <b>Verde</b> riguarda solo la raccolta configurata, non tutti gli atti del Comune; <b>rosso</b> significa errore, non assenza di notizie.</p>
+    <div class="source-filters"><button type="button" data-state="" class="chip selected" aria-pressed="true">Tutte</button><button type="button" data-state="VERDE" class="chip" aria-pressed="false">Verdi</button><button type="button" data-state="GIALLO" class="chip" aria-pressed="false">Parziali</button><button type="button" data-state="ROSSO" class="chip" aria-pressed="false">Bloccate</button></div>
+    <div id="sources" class="cards"></div>
+   </section>
+   <section class="page hidden" id="page-saved">
+    <div class="section-head"><div><p class="eyebrow">IL TUO TACCUINO</p><h2>Da approfondire</h2></div><button id="export-notes" class="small-btn" type="button">Esporta note ↓</button></div>
+    <p class="info">Segnalibri e appunti rimangono <b>soltanto su questo telefono</b>. Non sono sincronizzati né pubblicati: esportali per avere una copia.</p>
+    <div id="saved" class="cards"></div>
+   </section>
+   <section class="page hidden" id="page-info">
+    <div class="section-head"><div><p class="eyebrow">ISTRUZIONI E LIMITI</p><h2>Come funziona</h2></div></div>
+    <div class="info-card"><h3>Il telefono mostra, non esegue lo scraping</h3><p>Il servizio remoto dovrà raccogliere gli atti e pubblicare un bollettino JSON. Quando sarà attivato, l'app lo consulterà quando la apri o tocchi ↻. Il tasto ↻ <b>non avvia un nuovo controllo dei siti</b>.</p></div>
+    <div class="info-card"><h3>Aggiungila alla schermata Home</h3><p>Dopo la pubblicazione, apri il link in Chrome su Android, tocca ⋮ e scegli «Aggiungi a schermata Home». Per ora è un collegamento web: l’installazione completa come app arriverà con la versione PWA.</p></div>
+    <div class="info-card"><h3>Che cosa è già disponibile?</h3><p>Interfaccia mobile, ricerca, filtri, fonti, link ai PDF, segnalibri e note esportabili. Le 11 sorgenti sono configurate, <b>non è dimostrato che siano tutte leggibili</b>. Le altre 69 dell'inventario storico devono essere integrate. Le notifiche push non sono ancora attive.</p></div>
+    <div class="info-card"><h3>Privacy e pubblicazione</h3><p>La modalità gratuita tramite GitHub Pages rende <b>pubblico</b> il bollettino dei dati eventualmente raccolti. Gli appunti rimangono nel tuo browser e non vengono inclusi nel bollettino. Se vuoi mantenere riservate anche le segnalazioni, servirà un hosting con accesso protetto.</p></div>
+    <div class="info-card"><h3>Controllo tecnico</h3><p>Un sito bloccato da CAPTCHA, autenticazione o protezioni di rete non viene aggirato. Gli errori sono visibili nella scheda Fonti. Il punteggio di rilevanza non equivale a una verifica giornalistica.</p></div>
+   </section>
+   <p class="footer">Radar Macerata · Pilota 1.1<br>Ogni articolo richiede lettura dell'atto, riscontri e verifica della data di pubblicazione.</p>
+  </main>
+  <nav class="bottom-nav" aria-label="Navigazione principale">
+   <button data-page="feed" class="active" aria-current="page" type="button"><span aria-hidden="true">▤</span><small>Notizie</small></button>
+   <button data-page="sources" type="button"><span aria-hidden="true">◉</span><small>Fonti</small></button>
+   <button data-page="saved" type="button"><span aria-hidden="true">♧</span><small>Salvati</small></button>
+   <button data-page="info" type="button"><span aria-hidden="true">ⓘ</span><small>Info</small></button>
+  </nav>
+ </div>
+ <script type="application/json" id="initial-report">{"generated": "In attesa di attivazione", "generated_iso": "", "counts": {"VERDE": 0, "GIALLO": 0, "ROSSO": 0, "GRIGIO": 11}, "checks": [{"source_id": "sibillini_albo", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://albo.sibillini.net/", "source_name": "Parco nazionale Monti Sibillini · Albo"}, {"source_id": "ata3_albo", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.ata3macerata.it/albo-pretorio/", "source_name": "ATA 3 Macerata · Albo"}, {"source_id": "aato3_albo", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.ato3marche.it/albo-pretorio/", "source_name": "AATO 3 Macerata · Albo"}, {"source_id": "matelica_news", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.comune.matelica.mc.it/", "source_name": "Matelica · Novità e avvisi"}, {"source_id": "matelica_delibere", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://matelica.halleyweb.it/zf/index.php/atti-amministrativi/delibere", "source_name": "Matelica · Delibere"}, {"source_id": "matelica_determine", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://matelica.halleyweb.it/zf/index.php/atti-amministrativi/determine", "source_name": "Matelica · Determine"}, {"source_id": "camerino_delibere", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.halleyweb.com/c043007/zf/index.php/atti-amministrativi/delibere", "source_name": "Camerino · Delibere"}, {"source_id": "camerino_determine", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.halleyweb.com/c043007/zf/index.php/atti-amministrativi/determine", "source_name": "Camerino · Determine"}, {"source_id": "sanseverino_delibere", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.halleyweb.com/c043047/zf/index.php/atti-amministrativi/delibere", "source_name": "San Severino Marche · Delibere"}, {"source_id": "sanseverino_determine", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.halleyweb.com/c043047/zf/index.php/atti-amministrativi/determine", "source_name": "San Severino Marche · Determine"}, {"source_id": "camerino_unione_delibere", "checked_at": "", "state": "GRIGIO", "count": 0, "new_count": 0, "latest_date": null, "note": "NON CONTROLLATA: eseguire python radar.py check", "url": "https://www.halleyweb.com/unmmdcmc/zf/index.php/atti-amministrativi/delibere", "source_name": "Unione Montana Marca di Camerino · Delibere"}], "items": [], "warning": "Interfaccia pilota: nessuna scansione automatica eseguita. I dati sono dimostrativi."}</script>
+ <script>
+'use strict';
+/* Radar Mobile: interfaccia di lettura del bollettino pubblicato, non crawler. */
+const $=id=>document.getElementById(id);
+const KEY='radar-macerata-saved-v1';
+const SNAPSHOT='radar-macerata-last-snapshot-v1';
+const state={report:null,activePage:'feed',feedFilter:'all',sourceFilter:'',saved:readLocal(KEY,{})};
+function readLocal(key,otherwise){try{return JSON.parse(localStorage.getItem(key))||otherwise;}catch{return otherwise;}}
+function writeLocal(key,value){try{localStorage.setItem(key,JSON.stringify(value));return true;}catch{return false;}}
+function el(tag,cls,content){const n=document.createElement(tag);if(cls)n.className=cls;if(content!==undefined)n.textContent=String(content);return n;}
+function add(parent,tag,cls,content){const n=el(tag,cls,content);parent.append(n);return n;}
+function fmtDate(iso){if(!iso)return 'Data non disponibile'; const d=new Date(String(iso).length===10?iso+'T12:00:00':iso);return isNaN(d)?String(iso):new Intl.DateTimeFormat('it-IT',{day:'2-digit',month:'short',year:'numeric'}).format(d);}
+function safeUrl(raw){try{const u=new URL(raw,location.href);if(['https:','http:'].includes(u.protocol))return u.href;}catch{}return null;}
+function link(label,url,primary=false){const href=safeUrl(url);if(!href)return null;const a=el('a','action'+(primary?' primary':''),label);a.href=href;a.target='_blank';a.rel='noopener noreferrer';return a;}
+function isNew(x){const n=String(x.novelty||'');return /^(NUOVO|RETROSPETTIVO|AGGIORNAMENTO|DATA PUBBLICAZIONE DA VERIFICARE)/.test(n);}
+function uid(x){return x.uid||[x.source_id,x.url].join('::');}
+function isSaved(x){return Object.hasOwn(state.saved,uid(x));}
+function statusInfo(){const checks=state.report?.checks||[];const actual=checks.filter(c=>c.checked_at);const online=actual.length>0;return {online,checks,actual};}
+function showBanner(message,kind=''){const b=$('state-banner');b.className='notice'+(kind?' '+kind:'');b.textContent=message;}
+function updateHeader(cached=false){
+ const {online,actual}=statusInfo(); const label=$('sync-label');const status=$('sync-status');
+ if(!online){label.textContent='Nessuna scansione completata o registrata';status.textContent='Dati dimostrativi: 0 risultati';return;}
+ const checked=actual.map(c=>Date.parse(c.checked_at||'')).filter(n=>Number.isFinite(n));
+ const newest=checked.length?Math.max(...checked):NaN;
+ label.textContent='Ultimo controllo: '+(Number.isFinite(newest)?new Date(newest).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'non disponibile');
+ status.textContent=cached?'· Ultima copia salvata':'· Bollettino online';
+}
+function statusBanner(cached){
+ const {online,actual}=statusInfo();
+ if(!online){showBanner('ANTEPRIMA NON COLLEGATA AL MONITORAGGIO: nessun atto verificato automaticamente. Le schede Notizie, Fonti e Salvati sono utilizzabili, ma non ci sono dati aggiornati. Non interpretare l’assenza di risultati come assenza di notizie.','error');return;}
+ const count=state.report?.counts||{};
+ const invalid=(count.ROSSO||0)+(count.GIALLO||0)+(count.GRIGIO||0);
+ const dates=actual.map(c=>Date.parse(c.checked_at||'')).filter(Number.isFinite);
+ const age=dates.length?(Date.now()-Math.max(...dates))/3600000:Infinity;
+ if(cached){showBanner('NESSUN COLLEGAMENTO: stai visualizzando l’ultima copia disponibile, che potrebbe essere superata.','error');}
+ else if(age>36){showBanner('BOLLETTINO DATATO: nessuna scansione recente nelle ultime 36 ore. I dati non sono aggiornati.','error');}
+ else if(invalid){showBanner(`CONTROLLO INCOMPLETO: ${invalid} fonti su ${(state.report.checks||[]).length} sono parziali, bloccate o non tentate. ROSSO non significa nessun atto.`, '');}
+ else{showBanner('Il controllo delle fonti configurate non segnala guasti. La verifica completa dei documenti resta necessaria.','success');}
+}
+function updateStats(){
+ const p=state.report||{};const counts=p.counts||{};
+ const vals=[[p.items?.length||0,'Atti in archivio'],[counts.VERDE||0,'Fonti verdi'],[counts.GIALLO||0,'Fonti parziali'],[counts.ROSSO||0,'Fonti bloccate']];
+ $('stats').replaceChildren(...vals.map(([n,name])=>{const d=el('div','metric');add(d,'strong','',n);add(d,'span','',name);return d;}));
+}
+function makeTerritoryOptions(){const current=$('territory').value;const t=[...new Set((state.report?.items||[]).map(x=>x.group).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'it'));const sel=$('territory');sel.replaceChildren(el('option','','Tutti'));sel.firstChild.value='';for(const name of t){const option=el('option','',name);option.value=name;sel.append(option)}sel.value=t.includes(current)?current:'';}
+function renderCard(x,savedMode=false){
+ const card=el('article','card');
+ const row=add(card,'div','card-top');add(row,'span','',x.source_name||x.source_id||'Ente non disponibile');add(row,'span','badge '+(x.evidence_level||'INDICE'),x.evidence_level||'INDICE');
+ add(card,'h3','',x.title||'Oggetto non disponibile');
+ const meta=add(card,'div','card-data');add(meta,'span','',x.group||'Maceratese');add(meta,'span','','·');add(meta,'span','tag-score',`Interesse ${x.score||0}/100`);
+ const dates=add(card,'div','card-data');add(dates,'span','','Pubblicazione: '+(x.publication_date?fmtDate(x.publication_date):'DA VERIFICARE'));
+ if(x.act_date)add(dates,'span','','Atto: '+fmtDate(x.act_date));
+ if(x.act_number)add(dates,'span','','N. '+x.act_number);
+ if(isNew(x))add(card,'div','card-flag',x.novelty||'Possibile novità');
+ if(x.source_state&&x.source_state!=='VERDE')add(card,'div','card-flag',`Fonte ${x.source_state}. Il monitoraggio di questa raccolta non è completo.`);
+ if(x.detail_error&&x.evidence_level!=='DOCUMENTO')add(card,'div','card-flag',`Verifica necessaria: ${x.detail_error}`);
+ const actions=add(card,'div','action-row');
+ const src=link('Apri la fonte ↗',x.url,true);if(src)actions.append(src);
+ if(x.document_url){const pdf=link('Apri PDF ↗',x.document_url);if(pdf)actions.append(pdf);}
+ const marked=isSaved(x);const save=add(actions,'button','action'+(marked?' saved':''),marked?'★ Salvato':'☆ Salva');save.type='button';save.setAttribute('aria-pressed',String(marked));
+ save.addEventListener('click',()=>{const key=uid(x);if(isSaved(x))delete state.saved[key];else state.saved[key]={item:x,note:'',saved_at:new Date().toISOString()};if(!writeLocal(KEY,state.saved)){showBanner('Impossibile salvare: memoria del browser piena o disabilitata. Esporta prima gli appunti.','error');}renderFeed();renderSaved();});
+ if(savedMode){const noteLabel=add(card,'label','note-label','Appunti giornalistici · salvati solo qui');const note=add(noteLabel,'textarea','note-text');note.placeholder='Telefonate da fare, domande, dettagli da verificare…';note.value=state.saved[uid(x)]?.note||'';note.addEventListener('change',()=>{if(state.saved[uid(x)]){state.saved[uid(x)].note=note.value;writeLocal(KEY,state.saved)}});}
+ return card;
+}
+function renderFeed(){const wrapper=$('feed');const records=state.report?.items||[];const q=$('search').value.trim().toLocaleLowerCase('it');const group=$('territory').value;const min=Number($('priority').value)||0;
+ const filtered=records.filter(x=>{if((x.score||0)<min)return false;if(q&&!([x.title,x.source_name,x.group,x.theme,x.act_number].join(' ').toLocaleLowerCase('it').includes(q)))return false;if(group&&x.group!==group)return false;if(state.feedFilter==='new'&&!isNew(x))return false;if(state.feedFilter==='docs'&&x.evidence_level!=='DOCUMENTO')return false;return true}).sort((a,b)=>{
+  const pa=a.publication_date||a.act_date||'';const pb=b.publication_date||b.act_date||'';
+  return (isNew(b)?1:0)-(isNew(a)?1:0)|| (b.score||0)-(a.score||0) ||pb.localeCompare(pa);
+ });
+ $('feed-total').textContent=filtered.length+' elementi';
+ if(!filtered.length){wrapper.replaceChildren(el('div','empty',!records.length?'Ancora nessun atto acquisito. Questo non dimostra che i Comuni non abbiano pubblicato atti.':'Nessun elemento corrisponde ai filtri. Prova ad abbassare la soglia di priorità.'));return;}
+ wrapper.replaceChildren(...filtered.slice(0,200).map(x=>renderCard(x)));if(filtered.length>200)add(wrapper,'div','empty',`Mostrati i primi 200 di ${filtered.length} risultati. Restringi la ricerca per trovare il resto.`);
+}
+function renderSources(){const wrapper=$('sources');let list=(state.report?.checks||[]).filter(x=>!state.sourceFilter||x.state===state.sourceFilter);list.sort((a,b)=>({ROSSO:0,GIALLO:1,GRIGIO:2,VERDE:3}[a.state]??4)-({ROSSO:0,GIALLO:1,GRIGIO:2,VERDE:3}[b.state]??4));
+ wrapper.replaceChildren(...list.map(x=>{
+  const card=el('article','source-card');const content=add(card,'div');add(content,'span','badge '+(x.state||'GRIGIO'),x.state||'GRIGIO');add(content,'h3','',x.source_name||x.source_id?.replaceAll('_',' ')||'Fonte');
+  add(content,'p','',x.note||'Esito non documentato');if(x.checked_at)add(content,'p','','Ultimo tentativo: '+fmtDate(x.checked_at));
+  add(content,'p','',`Atti letti nell’indice: ${x.count||0}. Nuovi rilevati: ${x.new_count||0}.`);
+  const href=link('Apri albo ↗',x.url);if(href)card.append(href);return card;
+ }));if(!list.length)wrapper.append(el('div','empty','Non ci sono fonti con questo stato.'));
+}
+function renderSaved(){const wrapper=$('saved');const entries=Object.values(state.saved).filter(e=>e&&e.item);if(!entries.length){wrapper.replaceChildren(el('div','empty','Nessuna pista salvata. Tocca ☆ Salva su un atto per ritrovarlo qui.'));return;}
+ wrapper.replaceChildren(...entries.sort((a,b)=>String(b.saved_at).localeCompare(String(a.saved_at))).map(e=>renderCard(e.item,true)));
+}
+function switchPage(page){state.activePage=page;for(const name of ['feed','sources','saved','info'])$('page-'+name).classList.toggle('hidden',page!==name);document.querySelectorAll('.bottom-nav button').forEach(b=>{const active=b.dataset.page===page;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});if(page==='saved')renderSaved();if(page==='sources')renderSources();window.scrollTo({top:0,behavior:'smooth'});}
+async function loadReport(){const btn=$('refresh-btn');btn.disabled=true;btn.textContent='◌';let cached=false;
+ try{const response=await fetch('./data/report.json?v='+Date.now(),{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);const raw=await response.json();if(!raw||!Array.isArray(raw.items)||!Array.isArray(raw.checks))throw new Error('Formato inatteso');state.report=raw;writeLocal(SNAPSHOT,raw);}catch(err){const previous=readLocal(SNAPSHOT,null);if(previous&&Array.isArray(previous.items)){state.report=previous;cached=true;}else{state.report=JSON.parse(document.getElementById('initial-report').textContent);cached=true;}}
+ updateHeader(cached);statusBanner(cached);updateStats();makeTerritoryOptions();renderFeed();renderSources();renderSaved();btn.disabled=false;btn.textContent='↻';}
+function exportSaved(){const content=JSON.stringify({exported_at:new Date().toISOString(),app:'Radar Macerata',entries:Object.values(state.saved)},null,2);const blob=new Blob([content],{type:'application/json'});const u=URL.createObjectURL(blob);const a=el('a');a.href=u;a.download='radar_macerata_appunti_'+new Date().toISOString().slice(0,10)+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);}
+$('refresh-btn').addEventListener('click',loadReport);
+$('search').addEventListener('input',renderFeed);$('territory').addEventListener('change',renderFeed);$('priority').addEventListener('change',renderFeed);
+document.querySelectorAll('.chip-row .chip').forEach(b=>b.addEventListener('click',()=>{state.feedFilter=b.dataset.filter;document.querySelectorAll('.chip-row .chip').forEach(x=>{x.classList.toggle('selected',x===b);x.setAttribute('aria-pressed',String(x===b));});renderFeed();}));
+document.querySelectorAll('.source-filters .chip').forEach(b=>b.addEventListener('click',()=>{state.sourceFilter=b.dataset.state;document.querySelectorAll('.source-filters .chip').forEach(x=>{x.classList.toggle('selected',x===b);x.setAttribute('aria-pressed',String(x===b));});renderSources();}));
+document.querySelectorAll('.bottom-nav button').forEach(b=>b.addEventListener('click',()=>switchPage(b.dataset.page)));
+$('export-notes').addEventListener('click',exportSaved);
+
+loadReport();
+
+ </script>
+</body>
+</html>
