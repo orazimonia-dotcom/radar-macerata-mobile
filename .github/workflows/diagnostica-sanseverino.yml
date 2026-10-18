@@ -1,0 +1,132 @@
+name: Radar Macerata - Diagnostica San Severino
+
+# Test separato; non modifica il Radar pubblico e non ripubblica documenti.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-albo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Installa browser
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Diagnostica albo attuale e allegato PDF
+        shell: bash
+        run: |
+          cat > /tmp/test_sanseverino.py <<'PY'
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from urllib.parse import urlsplit
+          import hashlib, json, re
+          from playwright.sync_api import sync_playwright
+
+          ROOT = Path('diagnostica_sanseverino')
+          ROOT.mkdir(exist_ok=True)
+          START = 'https://www.comune.sanseverinomarche.mc.it/albo-pretorio/'
+          PORTAL = 'https://sanseverinomarche.trasparenza-valutazione-merito.it/web/trasparenza/albo-pretorio'
+          out = dict(checked_utc=datetime.now(timezone.utc).isoformat(), status='INCOMPLETO',
+                     steps=[], errors=[], attachments=[], possible_pagination=[], relevant_links=[])
+          def step(name, note=''):
+              out['steps'].append(dict(phase=name, detail=str(note)[:300]))
+              print('FASE',name,str(note)[:300],flush=True)
+          def shorturl(url):
+              # Evita di registrare query-string con possibili token di sessione.
+              z=urlsplit(url);return z.scheme+'://'+z.netloc+z.path
+          def label(element):
+              try: return re.sub(r'\s+', ' ', element.inner_text(timeout=2000)).strip()[:130]
+              except Exception: return ''
+          def meta(el):
+              vals={}
+              for name in ('href','title','aria-label','onclick','class','download'):
+                  try:
+                      v=el.get_attribute(name,timeout=1500)
+                      if v:
+                          vals[name]=shorturl(v) if name=='href' and v.startswith('http') else v[:220]
+                  except Exception:pass
+              vals['text']=label(el)
+              return vals
+          try:
+              with sync_playwright() as p:
+                  browser=p.chromium.launch(headless=True)
+                  ctx=browser.new_context(accept_downloads=True, locale='it-IT',viewport={'width':1200,'height':850})
+                  page=ctx.new_page()
+                  try:
+                      response=page.goto(START,wait_until='domcontentloaded',timeout=40000)
+                      step('sito_istituzionale',str(response.status if response else '?')+' '+shorturl(page.url))
+                      page.goto(PORTAL,wait_until='domcontentloaded',timeout=45000)
+                      page.wait_for_timeout(5000)
+                      step('portale_albo',shorturl(page.url)+' '+label(page.locator('body')))
+                      body=page.locator('body').inner_text(timeout=10000)
+                      if 'BENVENUTO NELLE PAGINE' in body.upper() and 'ALBO PRETORIO' in body.upper():
+                          link=page.get_by_text(re.compile(r'^Albo pretorio$',re.I))
+                          if link.count():
+                              link.first.click(timeout=12000)
+                              page.wait_for_timeout(4000)
+                              step('link_elenco_albo',shorturl(page.url))
+                      body=page.locator('body').inner_text(timeout=15000)
+                      m=re.search(r'(\d+)\s+risultati\s+in\s+(\d+)\s+pagine',body,re.I)
+                      if m:step('conteggi_elenco',f'{m.group(1)} pubblicazioni, {m.group(2)} pagine dichiarate')
+                      else:step('conteggi_elenco','Non trovati in testo; DOM da verificare')
+                      out['possible_pagination']=[meta(x) for x in page.locator('a,button').all()[:200] if re.search(r'pagina|successiv|next|[2345]',label(x),re.I)][:20]
+                      chosen=page.get_by_text(re.compile('LIMITAZIONI TEMPORANEE AL TRANSITO ED ALLA SOSTA',re.I))
+                      if chosen.count():
+                          chosen.first.click(timeout=12000)
+                          page.wait_for_timeout(1200)
+                          step('scheda_aperta','Pubblicazione ordinanza 425/2026 espansa')
+                          detail=page.get_by_text(re.compile(r'Apri dettaglio',re.I))
+                          if detail.count():
+                              detail.first.click(timeout=16000)
+                              page.wait_for_timeout(3500)
+                              step('dettaglio',shorturl(page.url))
+                              text=page.locator('body').inner_text(timeout=12000)
+                              step('riferimento_atto','Numero 425 presente: '+str('425' in text)+'; allegati: '+str('Numero allegati' in text))
+                              row=page.locator('tr').filter(has_text=re.compile(r'Ordinanza\s*n\.?\s*0*425/2026',re.I))
+                              if row.count():
+                                  r=row.first
+                                  out['attachments']=[meta(a) for a in r.locator('a,button,[role="button"]').all()]
+                                  step('link_allegati','Trovati '+str(len(out['attachments']))+' comandi nella riga del documento principale')
+                                  # Non azionare link indistinti: prima occorre discriminare PDF e P7M.
+                                  obvious=r.locator('a[href$=".pdf"], a[title*="PDF" i],a[aria-label*="PDF" i]')
+                                  if obvious.count()==1:
+                                      a=obvious.first
+                                      try:
+                                          with page.expect_download(timeout=20000) as d:
+                                              a.click(timeout=10000)
+                                          download=d.value
+                                          f=ROOT/'allegato_temporaneo'
+                                          download.save_as(f)
+                                          data=f.read_bytes()
+                                          out['download']={'bytes':len(data),'signature_pdf':data.startswith(b'%PDF'),
+                                                  'suggested_filename':download.suggested_filename,
+                                                  'sha256':hashlib.sha256(data).hexdigest()}
+                                          f.unlink(missing_ok=True)
+                                          step('pdf_ottenuto',str(out['download']))
+                                      except Exception as e:out['errors'].append('download: '+str(e)[:250])
+                                  else:
+                                      step('scelta_allegato','Nessun link PDF inequivocabile: NON fare click sull’icona .p7m/lucchetto')
+                              else:step('allegati','Riga Ordinanza 425 non identificata automaticamente')
+                          else:step('dettaglio','Bottone Apri dettaglio non trovato')
+                      else:step('atto_campione','Ordinanza campione non disponibile nella prima pagina')
+                      out['status']='DIAGNOSTICA COMPLETATA (verificare copertura e file PDF nel rapporto)'
+                  except Exception as e:
+                      out['errors'].append(str(e)[:600]);step('errore',str(e)[:250])
+                  finally:browser.close()
+          except Exception as e:out['errors'].append('avvio: '+str(e)[:400])
+          (ROOT/'risultati.json').write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('ESITO:',out['status'],'fasi',len(out['steps']),'errori',len(out['errors']),flush=True)
+          PY
+          python /tmp/test_sanseverino.py
+      - name: Conserva soltanto il rapporto tecnico
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostica-sanseverino
+          path: diagnostica_sanseverino/risultati.json
+          if-no-files-found: warn
+          retention-days: 7
