@@ -1,6 +1,6 @@
-name: Radar Macerata · verifica fonti pilota (v1.2 con Albo Matelica)
+name: "Radar Macerata · verifica fonti pilota (v1.3: collegamenti PDF Matelica)"
 
-# PROTOTIPO: 11 fonti storiche + albo corrente Matelica da browser, non tutte le 80 fonti progettate.
+# PROTOTIPO: 11 fonti storiche + albo corrente Matelica da browser. Link PDF ufficiale solo se verificato senza sessione.
 on:
   workflow_dispatch:
   schedule:
@@ -621,6 +621,8 @@ jobs:
           import json
           import re
           import sqlite3
+          import requests
+          from urllib.parse import urlparse
           from datetime import date, timedelta
           from pathlib import Path
           from zoneinfo import ZoneInfo
@@ -641,7 +643,7 @@ jobs:
           }
           HOME = 'https://matelica.halleyegov.it/'
           MAX_PAGES = 12  # limite esplicito; non coincide necessariamente con la copertura integrale
-          MAX_PDF_CHECKS = 12  # riduce carico sul portale; gli altri restano INDICE
+          MAX_PDF_CHECKS = 20  # lotti progressivi; non ripubblica copie dei PDF
 
 
           def attach_source():
@@ -765,10 +767,28 @@ jobs:
                           if len(excerpt) <= 180:
                               result['detail_error']='PDF scaricato ma testo non leggibile (forse scansione)'
                               continue
-                          # Niente PDF ripubblicato: può includere dati personali.
-                          result.update(level='DOCUMENTO', document_url='',
-                                        document_text=f'PDF testuale letto ({len(reader.pages)} pagine, SHA256 {hashlib.sha256(raw).hexdigest()[:16]}); documento accessibile tramite scheda ufficiale della pubblicazione n. {row["pub_num"]}.',
-                                        detail_error='')
+                          # Solo collegamenti al sito del Comune, verificati con richiesta SENZA cookie/sessione.
+                          # Non ripubblicare il PDF: può includere dati personali.
+                          official_pdf = ''
+                          candidate = download.url or ''
+                          candidate_url = urlparse(candidate)
+                          if (candidate_url.scheme == 'https' and
+                              candidate_url.hostname == 'www.comune.matelica.mc.it' and
+                              candidate_url.path.lower().endswith('.pdf') and
+                              '/halley/' in candidate_url.path.lower()):
+                              try:
+                                  check = requests.get(candidate, timeout=20, headers={'User-Agent':'Mozilla/5.0'})
+                                  if (check.status_code == 200 and
+                                      len(check.content) <= 15_000_000 and
+                                      check.content.startswith(b'%PDF') and
+                                      hashlib.sha256(check.content).digest() == hashlib.sha256(raw).digest()):
+                                      official_pdf = candidate
+                              except requests.RequestException as ex:
+                                  print('MATELICA LINK PDF NON ACCESSIBILE IN SESSIONE NUOVA', str(ex)[:140], flush=True)
+                          result.update(level='DOCUMENTO', document_url=official_pdf,
+                                        document_text=f'PDF testuale letto ({len(reader.pages)} pagine, SHA256 {hashlib.sha256(raw).hexdigest()[:16]}); documento originale conservato dal Comune nella pubblicazione n. {row["pub_num"]}.',
+                                        detail_error='' if official_pdf else 'PDF letto; collegamento diretto non verificato senza sessione. Aprire la fonte e cercare il numero di pubblicazione.')
+                          print('MATELICA COLLEGAMENTO PDF',row['pub_num'],'VERIFICATO' if official_pdf else 'NON VERIFICATO',flush=True)
                           print('MATELICA PDF TESTO',row['pub_num'],len(raw),'bytes',len(reader.pages),'pagine',flush=True)
                           return result
                       except Exception as ex:
@@ -825,12 +845,21 @@ jobs:
                                   "prev => {const e=document.querySelector('div.cmp-card .category-top span');return e && e.textContent.trim()!==prev;}",
                                   arg=first,timeout=16000)
                           # Schede selezionate: massima priorita' alle pubblicazioni recenti e interessanti.
-                          ordered=sorted(all_rows,key=lambda x: (x['publication_date'] or '',textscore(x['original_title'],'Matelica')[1]),reverse=True)
+                          # Priorita': PDF gia' acquisiti ma privi di link, poi atti solo INDICE,
+                          # infine schede precedentemente aperte senza PDF. Progredisce a ogni run.
+                          def row_priority(row):
+                              uid=hashlib.sha256((SRC['id']+'|'+row['year']+'|'+row['pub_num']).encode()).hexdigest()
+                              old=db.execute('SELECT evidence_level,document_url FROM items WHERE uid=?',(uid,)).fetchone()
+                              if old and old['evidence_level']=='DOCUMENTO' and old['document_url']:
+                                  return (-1,'',0)
+                              if old and old['evidence_level']=='DOCUMENTO': tier=3
+                              elif old and old['evidence_level']=='SCHEDA':tier=1
+                              else:tier=2
+                              return (tier,row['publication_date'] or '',textscore(row['original_title'],'Matelica')[1])
+                          ordered=sorted(all_rows,key=row_priority,reverse=True)
                           target=[]
                           for row in ordered:
-                              uid=hashlib.sha256((SRC['id']+'|'+row['year']+'|'+row['pub_num']).encode()).hexdigest()
-                              old=db.execute('SELECT evidence_level FROM items WHERE uid=?',(uid,)).fetchone()
-                              if old and old['evidence_level']=='DOCUMENTO':continue
+                              if row_priority(row)[0]<0:continue
                               if len(target)<MAX_PDF_CHECKS:target.append(row)
                           details={}
                           for row in target:
@@ -870,7 +899,7 @@ jobs:
                   db.execute('''INSERT INTO items(uid,source_id,title,url,first_seen,last_seen,publication_date,act_date,act_number,theme,score,evidence_level,document_url,excerpt,novelty,detail_error)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(uid) DO UPDATE SET last_seen=excluded.last_seen,publication_date=COALESCE(excluded.publication_date,items.publication_date),act_date=COALESCE(excluded.act_date,items.act_date),act_number=COALESCE(excluded.act_number,items.act_number),evidence_level=excluded.evidence_level,document_url=excluded.document_url,excerpt=excluded.excerpt,novelty=excluded.novelty,detail_error=excluded.detail_error''',
-                       (uid,SRC['id'],row['title'],row['url'],stamp,stamp,pdate,row['act_date'],row['act_number'],theme,score,evidence['level'],'',evidence['document_text'],novelty,evidence['detail_error']))
+                       (uid,SRC['id'],row['title'],row['url'],stamp,stamp,pdate,row['act_date'],row['act_number'],theme,score,evidence['level'],evidence['document_url'],evidence['document_text'],novelty,evidence['detail_error']))
                   new+=not bool(existing)
               latest=max(dates) if dates else None
               if not all_rows:
@@ -909,7 +938,7 @@ jobs:
           t=t.replace('Le altre 69 dell’inventario storico','Le altre 68 dell’inventario storico')
           # Sui documenti Halley Matelica l'URL del download e' legato alla sessione.
           marker=" if(x.document_url){const pdf=link('Apri PDF ↗',x.document_url);if(pdf)actions.append(pdf);}"
-          addon=" if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&!x.document_url)add(card,'div','card-flag','PDF letto dal Radar ma senza link pubblico permanente. Per scaricarlo, apri la fonte e cerca il numero di pubblicazione riportato nel titolo.');"
+          addon=" if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&!x.document_url)add(card,'div','card-flag','PDF letto dal Radar, ma nessun collegamento diretto verificato senza sessione. Apri la fonte e cerca il numero di pubblicazione.');if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&x.document_url)add(card,'div','card-flag','Il link Apri PDF punta al documento ufficiale del Comune, verificato al momento del controllo; potrebbe non restare disponibile dopo la scadenza di pubblicazione.');"
           if marker in t:t=t.replace(marker,marker+addon)
           p.write_text(t,encoding='utf-8')
           PYAPP
