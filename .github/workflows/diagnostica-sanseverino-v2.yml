@@ -1,0 +1,169 @@
+name: Radar Macerata - Diagnostica San Severino v2 (click reali)
+
+# Test separato: non cambia l'app pubblica. Non aggira sistemi di protezione.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-navigazione:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Installa Playwright e Chromium
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Segui i due click dall'albo del sito comunale
+        shell: bash
+        run: |
+          cat > /tmp/diagnostica_sanseverino_v2.py <<'PYRADAR'
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from urllib.parse import urlsplit
+          from playwright.sync_api import sync_playwright
+          import json, re, sys, time
+
+          ROOT = Path('diagnostica_sanseverino_v2')
+          ROOT.mkdir(exist_ok=True)
+          START = 'https://www.comune.sanseverinomarche.mc.it/albo-pretorio/'
+          HOST = 'sanseverinomarche.trasparenza-valutazione-merito.it'
+          WAF = ('web page blocked', 'pagina web bloccata', 'mdawaf', 'access denied', 'request blocked')
+          report = {'when_utc': datetime.now(timezone.utc).isoformat(), 'status':'NON_AVVIATO',
+                    'stages':[], 'errors':[], 'document_downloaded': False}
+
+          def short(url):
+              u = urlsplit(url)
+              return f'{u.scheme}://{u.netloc}{u.path}'
+
+          def record(label, detail=''):
+              report['stages'].append({'fase':label,'dettaglio':str(detail)[:650]})
+              print('FASE:',label,str(detail)[:600],flush=True)
+
+          def body_of(page):
+              try: return page.locator('body').inner_text(timeout=12000)
+              except Exception as e: return 'Lettura body non riuscita: ' + str(e)[:250]
+
+          def blocked(page):
+              content = body_of(page).lower()
+              return any(a in content for a in WAF)
+
+          def inspect(page, name):
+              body=body_of(page)
+              record(name, f'URL={short(page.url)} Titolo={page.title()[:80]} Testo={body[:220]!r}')
+              if blocked(page):
+                  report['status']='BLOCCO_WAF'
+                  report['errors'].append('Il portale ha restituito una pagina di blocco anche seguendo i click dal sito comunale.')
+                  return False
+              return True
+
+          def wait_click_result(ctx, pg, before_url, before_n, seconds=17):
+              # Una scheda nuova e una navigazione nella stessa scheda sono entrambe previste.
+              limit=time.monotonic()+seconds
+              while time.monotonic()<limit:
+                  if len(ctx.pages)>before_n: return ctx.pages[-1]
+                  if pg.url != before_url: return pg
+                  time.sleep(.25)
+              return ctx.pages[-1] if len(ctx.pages)>before_n else pg
+
+          try:
+              with sync_playwright() as p:
+                  browser = p.chromium.launch(headless=True)
+                  ctx=browser.new_context(locale='it-IT', viewport={'width':1200,'height':850}, accept_downloads=True)
+                  try:
+                      page=ctx.new_page()
+                      response=page.goto(START,wait_until='domcontentloaded',timeout=45000)
+                      record('01_pagina_del_comune',f'HTTP {response.status if response else "?"}')
+                      if not inspect(page,'02_verifica_pagina_del_comune'):
+                          pass
+                      else:
+                          # Il collegamento corretto e' il PRIMO Albo Pretorio verso il gestore attuale,
+                          # NON l'archivio Halley degli atti antecedenti al luglio 2019.
+                          links=page.locator('a[href*="trasparenza-valutazione-merito.it"]')
+                          candidates=[]
+                          for k in range(links.count()):
+                              a=links.nth(k)
+                              label=(a.inner_text(timeout=5000) or '').strip()
+                              href=a.get_attribute('href') or ''
+                              if re.search(r'albo\s+pretorio',label,re.I):
+                                  candidates.append((k,label,short(href)))
+                          record('03_collegamenti_trovati',str(candidates[:6]))
+                          if not candidates:
+                              report['status']='LINK_ISTITUZIONALE_NON_TROVATO'
+                              report['errors'].append("Non trovato il link all'albo attuale nella pagina del Comune.")
+                          else:
+                              k,label,href=candidates[0]
+                              before_url,before_n=page.url,len(ctx.pages)
+                              links.nth(k).click(timeout=20000)
+                              active=wait_click_result(ctx,page,before_url,before_n)
+                              active.wait_for_load_state('domcontentloaded',timeout=30000)
+                              active.wait_for_timeout(2500)
+                              record('04_CLICK_EFFETTUATO_SUL_SITO_COMUNALE',label+' -> '+href)
+                              if inspect(active,'05_portale_dopo_click_comunale'):
+                                  txt=body_of(active)
+                                  if re.search(r'benvenut[oa]\s+nelle\s+pagine',txt,re.I):
+                                      # Secondo click esattamente sulla voce verde della schermata dell'utente.
+                                      controls=active.locator('a,button,[role="link"],[role="button"]')
+                                      green=[]
+                                      for k in range(min(controls.count(),250)):
+                                          el=controls.nth(k)
+                                          label=' '.join((el.inner_text(timeout=1700) or '').split())
+                                          if re.fullmatch(r'Albo\s+pretorio',label,re.I):
+                                              green.append((k,label,el.get_attribute('href') or ''))
+                                      record('06_voci_verdi_albo',str(green[:5]))
+                                      if not green:
+                                          report['status']='VOCE_VERDE_NON_TROVATA'
+                                          report['errors'].append('Pagina di benvenuto visibile, ma voce Albo pretorio non identificata nel DOM.')
+                                      else:
+                                          before_url,before_n=active.url,len(ctx.pages)
+                                          controls.nth(green[0][0]).click(timeout=20000)
+                                          active=wait_click_result(ctx,active,before_url,before_n)
+                                          active.wait_for_load_state('domcontentloaded',timeout=30000)
+                                          active.wait_for_timeout(2500)
+                                          record('07_CLICK_EFFETTUATO_SU_ALBO_VERDE',green[0][1])
+                                          if inspect(active,'08_elenco_dopo_click_verde'):
+                                              report['status']='ACCESSO_ELENCO_POSSIBILE'
+                                  else:
+                                      record('06_senza_pagina_benvenuto',"Il primo click sembra aver aperto direttamente l'elenco o un altro percorso.")
+                                      report['status']='ACCESSO_ELENCO_POSSIBILE'
+                                  if report['status']=='ACCESSO_ELENCO_POSSIBILE':
+                                      txt=body_of(active)
+                                      m=re.search(r'(\d+)\s+risultati\s+in\s+(\d+)\s+pagine',txt,re.I)
+                                      if m:
+                                          report['results_count']=int(m.group(1))
+                                          report['pages_count']=int(m.group(2))
+                                          record('09_pubblicazioni',f'{m.group(1)} risultati in {m.group(2)} pagine')
+                                          report['status']='ELENCO_ACCESSIBILE'
+                                      else:
+                                          record('09_pubblicazioni','Conteggi non trovati: apertura elenco non ancora dimostrata')
+                                      # Solo metadati dei comandi pubblici, nessun token o query-string.
+                                      anchors=active.locator('a,button,[role="button"]')
+                                      controls_data=[]
+                                      for k in range(min(anchors.count(),100)):
+                                          el=anchors.nth(k)
+                                          label=' '.join((el.inner_text(timeout=900) or '').split())
+                                          if re.search(r'dettaglio|prossima|successiv|albo|pagina',label,re.I):
+                                              controls_data.append({'testo':label[:90], 'url':short(el.get_attribute('href')) if (el.get_attribute('href') or '').startswith('http') else ''})
+                                      report['controls_sample']=controls_data[:25]
+                  finally:
+                      browser.close()
+          except Exception as e:
+              report['errors'].append(str(e)[:650])
+              report['status']='ERRORE_ESECUZIONE'
+
+          (ROOT/'risultati.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('ESITO REALE:',report['status'],'Errori:',report['errors'],flush=True)
+          # Una schermata di blocco non deve più apparire come test riuscito.
+          if report['status'] != 'ELENCO_ACCESSIBILE': sys.exit(1)
+          PYRADAR
+          python /tmp/diagnostica_sanseverino_v2.py
+      - name: Conserva rapporto diagnostico per 7 giorni
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostica-sanseverino-v2
+          path: diagnostica_sanseverino_v2/risultati.json
+          retention-days: 7
+          if-no-files-found: warn
