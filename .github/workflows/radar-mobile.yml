@@ -1,4 +1,4 @@
-name: "Radar Macerata · v1.5 priorità calibrate (titoli e date)"
+name: "Radar Macerata · v1.6 selezione ampia (prioritarie + 10 minori)"
 
 # PROTOTIPO: 11 fonti storiche + albo corrente Matelica da browser. Link PDF ufficiale solo se verificato senza sessione.
 on:
@@ -502,10 +502,39 @@ jobs:
                   x['ready_for_article']=False
                   x['needs_journalist_review']=x['editorial_class']=='PRIORITARIA'
                   x['link_proof']=x['document_url'] if x['document_url'] else x['url']
-              payload={'generated':clock.strftime('%d/%m/%Y %H:%M %Z'), 'generated_iso':clock.isoformat(), 'counts':counts,'checks':[dict(x) for x in checks],'items':items,'warning':'Prototipo: un controllo parziale o non raggiunto non equivale ad assenza di atti. Verificare ogni documento sulla fonte originale.'}
+              # Rassegna di scelta: tutte le piste prioritarie RECENTI + fino a 10
+              # piste secondarie, diversificate per territorio. Non sopprime l'archivio.
+              # L'intervallo (ultimi 14 giorni) e' esplicito: atti gia' censiti non
+              # vengono presentati come notizie pubblicate oggi.
+              recent=[x for x in items if x.get('publication_date') and
+                      threshold <= x['publication_date'] <= clock.date().isoformat()]
+              high=[x for x in recent if x['editorial_class']=='PRIORITARIA']
+              low_pool=sorted((x for x in recent if x['editorial_class']=='DA_VERIFICARE'),
+                              key=lambda x:(x['score'],x['publication_date'] or '',x['evidence_level']=='DOCUMENTO'),reverse=True)
+              secondary=[]
+              per_group={}
+              for x in low_pool:
+                  group=x.get('group') or 'Altri territori'
+                  if per_group.get(group,0)<5 and len(secondary)<10:
+                      secondary.append(x)
+                      per_group[group]=per_group.get(group,0)+1
+              if len(secondary)<10:
+                  already={x['uid'] for x in secondary}
+                  for x in low_pool:
+                      if len(secondary)>=10:break
+                      if x['uid'] not in already:
+                          secondary.append(x);already.add(x['uid'])
+              ids_high={x['uid'] for x in high}
+              ids_low={x['uid'] for x in secondary}
+              for x in items:
+                  x['editorial_slot']='PRIORITARIA' if x['uid'] in ids_high else ('MINORE' if x['uid'] in ids_low else 'ARCHIVIO')
+              shortlist_meta={'prioritarie':len(high),'minori':len(secondary),
+                              'periodo_giorni':14,
+                              'nota':'Piste scelte dagli atti pubblicati negli ultimi 14 giorni, non necessariamente nuove oggi. La verifica del contenuto resta necessaria.'}
+              payload={'generated':clock.strftime('%d/%m/%Y %H:%M %Z'), 'generated_iso':clock.isoformat(), 'counts':counts,'checks':[dict(x) for x in checks],'items':items,'shortlist':shortlist_meta,'warning':'Prototipo: un controllo parziale o non raggiunto non equivale ad assenza di atti. Verificare ogni documento sulla fonte originale.'}
               (OUT/'report.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
               with (OUT/'notizie.csv').open('w',newline='',encoding='utf-8-sig') as f:
-                  fields=['publication_date','act_date','source_name','title','theme','score','editorial_class','editorial_reason','evidence_level','novelty','url','document_url','detail_error']
+                  fields=['publication_date','act_date','source_name','title','theme','score','editorial_class','editorial_slot','editorial_reason','evidence_level','novelty','url','document_url','detail_error']
                   w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');w.writeheader();w.writerows(items)
               with (OUT/'fonti.csv').open('w',newline='',encoding='utf-8-sig') as f:
                   fields=['checked_at','source_id','state','count','new_count','latest_date','note','url']
@@ -1032,6 +1061,24 @@ jobs:
           marker=" if(x.document_url){const pdf=link('Apri PDF ↗',x.document_url);if(pdf)actions.append(pdf);}"
           addon=" if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&!x.document_url)add(card,'div','card-flag','PDF letto dal Radar, ma nessun collegamento diretto verificato senza sessione. Apri la fonte e cerca il numero di pubblicazione.');if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&x.document_url)add(card,'div','card-flag','Il link Apri PDF punta al documento ufficiale del Comune, verificato al momento del controllo; potrebbe non restare disponibile dopo la scadenza di pubblicazione.');"
           if marker in t:t=t.replace(marker,marker+addon)
+          # Proposta editoriale richiesta: segnalazioni prioritarie + 10 minori.
+          # Tutte le altre pubblicazioni restano consultabili dal filtro Tutte.
+          import re
+          nav="""<button class="chip selected" type="button" data-filter="selection" aria-pressed="true">Selezione</button><button class="chip" type="button" data-filter="priority" aria-pressed="false">Prioritarie</button><button class="chip" type="button" data-filter="minor" aria-pressed="false">10 minori</button><button class="chip" type="button" data-filter="all" aria-pressed="false">Tutte</button><button class="chip" type="button" data-filter="new" aria-pressed="false">Novità</button><button class="chip" type="button" data-filter="docs" aria-pressed="false">Con documento</button>"""
+          t,changed=re.subn(r'(<div class="chip-row"[^>]*>).*?(</div>)',lambda m:m.group(1)+nav+m.group(2),t,count=1,flags=re.S)
+          assert changed==1,'Barra dei filtri non trovata'
+          t=t.replace("feedFilter:'all'","feedFilter:'selection'",1)
+          t=t.replace('<option value="0">Qualsiasi</option>','<option value="0" selected>Qualsiasi</option>',1)
+          t=t.replace("if(state.feedFilter==='priority'&&x.editorial_class!=='PRIORITARIA')return false;return true",
+                      "if(state.feedFilter==='priority'&&x.editorial_slot!=='PRIORITARIA')return false;if(state.feedFilter==='minor'&&x.editorial_slot!=='MINORE')return false;if(state.feedFilter==='selection'&&!['PRIORITARIA','MINORE'].includes(x.editorial_slot))return false;return true")
+          t=t.replace("$('feed-total').textContent=filtered.length+' elementi';",
+                      "const pick=state.report?.shortlist||{}; $('feed-total').textContent=state.feedFilter==='selection'?((pick.prioritarie||0)+' prioritarie + '+(pick.minori||0)+' minori'):filtered.length+' elementi';")
+          t=t.replace("add(card,'h3','',x.title||'Oggetto non disponibile');",
+                      "add(card,'h3','',x.title||'Oggetto non disponibile');if(x.editorial_slot==='MINORE')add(card,'div','card-flag','Pista secondaria della selezione · Da valutare');")
+          t=t.replace('Valutazione preliminare dal titolo: Priorità = pista giornalistica, non notizia verificata. SAL ordinari declassati; archivi privi di date non producono segnalazioni prioritarie.',
+                      'La Selezione mostra le piste prioritarie e fino a 10 piste minori degli ultimi 14 giorni, anche gia\' censite. Sono proposte da verificare: non notizie confermate. Il filtro Tutte mantiene accessibile l\'intero archivio.')
+          t=t.replace('Radar Macerata · Pilota 1.5','Radar Macerata · Pilota 1.6')
+          assert 'data-filter="selection"' in t and "editorial_slot!=='MINORE'" in t
           p.write_text(t,encoding='utf-8')
           PYAPP
           cp output/report.json site/data/report.json
