@@ -1,4 +1,4 @@
-name: "Radar Macerata · v1.4 selezione giornalistica"
+name: "Radar Macerata · v1.5 priorità calibrate (titoli e date)"
 
 # PROTOTIPO: 11 fonti storiche + albo corrente Matelica da browser. Link PDF ufficiale solo se verificato senza sessione.
 on:
@@ -197,34 +197,55 @@ jobs:
               return rows
           
           
+
           def editorial_assessment(title):
-              """Triage editoriale BASATO SULL'OGGETTO dell'atto, non sul PDF.
-              I criteri individuano piste: NON attestano apertura, chiusura,
-              incremento dei costi, responsabilita' o novita' reale.
-              L'ordine e' intenzionale: un contenzioso prevale su un SAL citato.
+              """Filtro conservativo su titolo; individua *piste*, non accerta notizie.
+              Prioritari solo eventi sostanziali che possono modificare un servizio pubblico,
+              un'opera o un bilancio. Gli atti di iter e SAL non diventano automaticamente notizie.
               """
               low=clean(title).casefold()
+              # Il prefisso dell'albo non fa parte dell'oggetto dell'atto.
+              low=re.sub(r'^\[albo\s+n\.\s*\d+/\d{4}\]\s*','',low)
               def has(pattern):return bool(re.search(pattern,low,re.I))
-              if has(r'\b(?:liquidazione|pagamento)\s+(?:di\s+|del\s+|degli\s+)?incentiv\w*\b'):
-                  return 'MONITORAGGIO','Liquidazione di incentivi: eventuali fasi già concluse sono riferimenti, non eventi nuovi.',17
-              if has(r'\b(?:risoluzione\s+(?:del\s+)?contratt\w*|decreto ingiuntivo|contenzios\w*|pignorament\w*|sospension[ei]\s+(?:dei\s+)?lavori|revoca\s+(?:dell[’\']?aggiudicazione|del contratto)|annullamento\s+(?:dell[’\']?aggiudicazione|del contratto)|sequestro\s+(?:del\s+)?cantiere)'):
-                  return 'PRIORITARIA','Il titolo segnala un possibile contenzioso o blocco: verificare le conseguenze negli atti.',87
-              if has(r'\b(?:ultimazione\s+(?:dei\s+)?lavori|fine\s+lavori|conclusione\s+(?:dei\s+)?lavori|collaudo\s+(?:finale|tecnico|tecnico.amministrativo)?|certificato\s+di\s+regolare\s+esecuzione|riapertura|apertura\s+al\s+pubblico|inaugurazione|entrata\s+in\s+(?:funzione|esercizio)|messa\s+in\s+esercizio)\b'):
-                  return 'PRIORITARIA','Possibile conclusione, collaudo o restituzione di un servizio: verificare l’effettiva operatività.',84
-              if has(r'\b(?:aumento\s+(?:di\s+)?cost[oi]|maggior[ei]\s+spes[ae]|incremento\s+(?:di\s+)?spesa|nuovo\s+finanziament|ulterior[ei]\s+finanziament|perizia\s+suppletiva|revisione\s+prezzi|variante\s+(?:in\s+corso\s+d[’\']opera|sostanziale)|raddoppio\s+(?:dei\s+)?cost[oi])\b'):
-                  return 'PRIORITARIA','Possibile variazione economica rilevante: verificare importi precedenti, attuali e date.',82
+              # Tutela della riservatezza: atti riferiti a singoli beneficiari non sono una
+              # notizia automaticamente pubblicabile, anche quando parlano di revoche.
+              if has(r'(?:nucleo\s+familiare|istanza\s+n[.\s]+\d+|eredi|sig\.\s+[a-z])') and has(r'(?:revoca\s+contributo|disagio\s+abitativo|liquidazione\s+somme)'):
+                  return 'MONITORAGGIO','Atto riferito a persone o nuclei individuabili: non promuovere senza un interesse pubblico autonomo e verifica privacy.',16
+              # I riferimenti a lavori ultimati dentro una liquidazione non equivalgono
+              # a una delibera che annuncia l'effettivo completamento dell'opera.
+              if has(r'\b(?:liquidazione\s+(?:di\s+)?incentiv\w*|liquidazione\s+incentiv\w*|pagamento\s+incentiv\w*|fondo\s+di\s+cui\s+all[’\']?art\.\s*113)'):
+                  return 'MONITORAGGIO','Liquidazione/incentivo tecnico: eventuali ultimazioni nel titolo possono essere solo riferimenti.',17
+              if has(r'\b(?:risoluzione\s+(?:del\s+)?contratt\w*|decreto\s+ingiuntivo|contenzios\w*|pignorament\w*|sospension[ei]\s+(?:dei\s+)?lavori|sequestro\s+(?:del\s+)?cantiere|revoca\s+(?:dell[’\']?aggiudicazione|del\s+contratto)|annullamento\s+(?:dell[’\']?aggiudicazione|del\s+contratto))'):
+                  return 'PRIORITARIA','Possibile blocco, revoca d’appalto o contenzioso: controllare gravità, importi e data effettiva.',88
+              if has(r'\b(?:ultimazione\s+(?:dei\s+)?lavori|fine\s+lavori|conclusione\s+(?:dei\s+)?lavori|collaudo\s+(?:finale|tecnico(?:.amministrativo)?)?|certificato\s+di\s+regolare\s+esecuzione|riapertura|apertura\s+al\s+pubblico|inaugurazione|entrata\s+in\s+(?:funzione|esercizio)|messa\s+in\s+esercizio)\b'):
+                  return 'PRIORITARIA','Possibile conclusione o riapertura: verificare che l’opera o il servizio sia effettivamente utilizzabile.',85
+              if has(r'\b(?:aumento\s+(?:di\s+)?cost[oi]|maggior[ei]\s+spes[ae]|incremento\s+(?:di\s+)?spesa|nuov[oi]\s+finanziament\w*|ulterior[ei]\s+finanziament\w*|perizia\s+suppletiva|revisione\s+prezzi|raddoppio\s+(?:dei\s+)?cost[oi])\b'):
+                  return 'PRIORITARIA','Possibile novità economica: confrontare quadro iniziale e attuale prima di scrivere.',83
               if has(r'\b(?:consegna\s+(?:dei\s+)?lavori|verbale\s+di\s+consegna|inizio\s+(?:dei\s+)?lavori|avvio\s+(?:del\s+)?cantiere|apertura\s+(?:del\s+)?cantiere|avvio\s+(?:degli\s+)?interventi)\b'):
-                  return 'PRIORITARIA','Il titolo parla di avvio/consegna: distinguere l’atto dall’effettiva apertura del cantiere.',78
+                  return 'PRIORITARIA','Possibile avvio effettivo: non confondere affidamento o autorizzazione con cantiere aperto.',80
+              # Una variante *contrattuale* importante merita esame; approvazione di SAL
+              # o semplice autorizzazione al transito restano atti ordinari.
+              if has(r'\b(?:perizia\s+di\s+variante|seconda\s+variante|variante\s+in\s+corso\s+d[’\']opera)\b') and has(r'\b(?:lavori|contratto|opera|progetto|ricostruzione|sisma|viabilit)'):
+                  return 'PRIORITARIA','Variante di un intervento pubblico: verificare se cambia importo, cronoprogramma o progetto.',79
+              if has(r'\b(?:modifica\s+contrattuale|modifica\s+(?:del\s+)?contratto|modifica\s+contratto\s+in\s+corso)\b') and has(r'(?:sisma|ricostruzione|lavori|concessione)'):
+                  return 'PRIORITARIA','Modifica di un contratto pubblico: verificare se è sostanziale e se comporta nuovi oneri.',77
+              if has(r'\b(?:variazione\s+di\s+bilancio\s+adottata\s+in\s+via\s+di\s+urgenza|dissesto\s+finanziario|riequilibrio\s+finanziario|chiusura\s+(?:definitiva\s+)?(?:di\s+)?(?:scuola|ospedale|strada))\b'):
+                  return 'PRIORITARIA','Decisione potenzialmente rilevante per bilancio o servizi: verificare effetti reali.',77
+              if has(r'\b(?:approvazione|adozione)\s+(?:definitiva\s+)?(?:della\s+)?variante\s+(?:parziale\s+)?(?:al\s+)?(?:p\.?r\.?g\.?|piano)\b|\bvariante\s+(?:parziale\s+)?(?:al\s+)?(?:p\.?r\.?g\.?|piano)\b.{0,35}\b(?:approvata|adottata)\b'):
+                  return 'PRIORITARIA','Possibile modifica urbanistica adottata o approvata: verificare area, effetti e fase procedurale.',76
+              if has(r'\b(?:avviso\s+di\s+selezione\s+pubblica|bando\s+di\s+concorso)') and has(r'(?:assunzione\s+di\s+n\.?\s*[3-9]\b|assunzione\s+di\s+n\.?\s*\d{2,}\b)'):
+                  return 'PRIORITARIA','Selezione per almeno tre posti: verificare requisiti, termini e numero di assunzioni reali.',75
               if has(r'\b(?:stato\s+(?:di\s+)?avanzamento\s+lavori|s\.?a\.?l\.?\s*(?:n\.?\s*)?\d+|certificato\s+di\s+pagamento|liquidazione\s+(?:di\s+)?fattur[ae]|pagamento\s+(?:di\s+)?fattur[ae]|rimborso\s+spese|acconto\s+fattura)\b'):
-                  return 'MONITORAGGIO','Atto intermedio di avanzamento/pagamento: non è da solo notizia di avvio o conclusione.',18
+                  return 'MONITORAGGIO','SAL, fattura o pagamento intermedio: non equivale all’avvio o al completamento dell’opera.',18
+              if has(r'\b(?:acquisto\s+(?:di\s+)?cancelleria|abbonamento\s+(?:annuale|triennale)|impegno\s+di\s+spesa\s+per\s+abbonamento|fornitura\s+materiale\s+cancelleria|pagamento\s+bollo\s+auto|servizio\s+tesoreria|approvazione\s+rendiconto\s+per\s+richiesta\s+liquidazione)\b'):
+                  return 'MONITORAGGIO','Spesa o adempimento ricorrente, salvo importi o conseguenze anomale documentate.',18
               if any(k in low for k in BORING):
-                  return 'MONITORAGGIO','Adempimento ricorrente: archiviarlo salvo anomalie riscontrate.',17
-              if has(r'\b(?:aggiudicazion\w*|affidamento\s+(?:dei\s+)?lavori|contratto\s+di\s+appalto|nuova\s+gara|indizione\s+(?:della\s+)?gara|bando\s+di\s+gara)\b'):
-                  return 'DA_VERIFICARE','Possibile affidamento o gara: non equivale all’avvio fisico dei lavori.',66
-              if has(r'\b(?:variante|finanziament\w*|stanziament\w*|approvazione\s+(?:del\s+)?progetto\s+esecutivo|progetto\s+esecutivo|approvazione\s+(?:del\s+)?progetto\s+definitivo|convenzione\s+urbanistica)\b'):
-                  return 'DA_VERIFICARE','Iter, variante o risorsa da contestualizzare: verificare che cosa cambia rispetto a prima.',52
-              return 'DA_VERIFICARE','Titolo non sufficiente per stabilire un fatto nuovo: verificare oggetto e documento.',36
-
+                  return 'MONITORAGGIO','Adempimento ricorrente: archiviare salvo anomalie riscontrate.',18
+              if has(r'\b(?:approvazione\s+(?:del\s+)?progetto\s+esecutivo|approvazione\s+progetto\s+esecutivo|progetto\s+esecutivo|aggiudicazion\w*|affidamento\s+(?:dei\s+)?lavori|contratto\s+di\s+appalto|nuova\s+gara|indizione\s+(?:della\s+)?gara|bando\s+di\s+gara)\b'):
+                  return 'DA_VERIFICARE','Atto che precede o regola i lavori: non prova che il cantiere sia partito.',58
+              if has(r'\b(?:variante|finanziament\w*|stanziament\w*|adeguamento|adozione\s+del\s+piano|convenzione\s+urbanistica|manutenzione\s+straordinaria|regolamentazione\s+(?:del\s+)?traffico)\b'):
+                  return 'DA_VERIFICARE','Iter o intervento da approfondire: serve prova del fatto nuovo e degli effetti sui cittadini.',49
+              return 'DA_VERIFICARE','Il solo titolo non basta a stabilire l’esistenza di una notizia nuova.',34
 
           def textscore(title, locality):
               low=title.casefold()
@@ -454,6 +475,17 @@ jobs:
               # Non occorre azzerare l'archivio o perdere le deduplicazioni.
               for x in items:
                   tier,why,_=editorial_assessment(x['title'])
+                  # Titoli di archivi senza data possono essere vecchi: mai etichettarli
+                  # come notizie prioritarie finche' non si conosce la pubblicazione.
+                  if tier=='PRIORITARIA':
+                      pdate=x.get('publication_date')
+                      cutoff=(clock.date()-timedelta(days=14)).isoformat()
+                      if not pdate:
+                          tier='DA_VERIFICARE'
+                          why='Pista potenzialmente rilevante, ma l’indice non fornisce una data di pubblicazione verificabile. '+why
+                      elif pdate<cutoff:
+                          tier='DA_VERIFICARE'
+                          why='Fatto individuato in un atto non recente: verificare se ci sono sviluppi nuovi. '+why
                   x['editorial_class']=tier
                   x['editorial_reason']=why
                   x['theme'],x['score']=textscore(x['title'],srcs.get(x['source_id'],{}).get('group',''))
@@ -994,8 +1026,8 @@ jobs:
           t=t.replace('<option value="30">Da 30/100</option>',
                       '<option value="50">Da 50/100 (selezione)</option><option value="30">Da 30/100</option>')
           t=t.replace('Punteggio indicativo, non verifica di veridicità.',
-                      'Valutazione preliminare dal titolo: SAL ordinari declassati. Avvio, conclusione e anomalie richiedono verifica degli atti.')
-          t=t.replace('Radar Macerata · Pilota 1.1','Radar Macerata · Pilota 1.4')
+                      'Valutazione preliminare dal titolo: Priorità = pista giornalistica, non notizia verificata. SAL ordinari declassati; archivi privi di date non producono segnalazioni prioritarie.')
+          t=t.replace('Radar Macerata · Pilota 1.1','Radar Macerata · Pilota 1.5')
           # Sui documenti Halley Matelica l'URL del download e' legato alla sessione.
           marker=" if(x.document_url){const pdf=link('Apri PDF ↗',x.document_url);if(pdf)actions.append(pdf);}"
           addon=" if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&!x.document_url)add(card,'div','card-flag','PDF letto dal Radar, ma nessun collegamento diretto verificato senza sessione. Apri la fonte e cerca il numero di pubblicazione.');if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&x.document_url)add(card,'div','card-flag','Il link Apri PDF punta al documento ufficiale del Comune, verificato al momento del controllo; potrebbe non restare disponibile dopo la scadenza di pubblicazione.');"
