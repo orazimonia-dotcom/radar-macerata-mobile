@@ -1,4 +1,4 @@
-name: "Radar Macerata · verifica fonti pilota (v1.3: collegamenti PDF Matelica)"
+name: "Radar Macerata · v1.4 selezione giornalistica"
 
 # PROTOTIPO: 11 fonti storiche + albo corrente Matelica da browser. Link PDF ufficiale solo se verificato senza sessione.
 on:
@@ -197,13 +197,46 @@ jobs:
               return rows
           
           
+          def editorial_assessment(title):
+              """Triage editoriale BASATO SULL'OGGETTO dell'atto, non sul PDF.
+              I criteri individuano piste: NON attestano apertura, chiusura,
+              incremento dei costi, responsabilita' o novita' reale.
+              L'ordine e' intenzionale: un contenzioso prevale su un SAL citato.
+              """
+              low=clean(title).casefold()
+              def has(pattern):return bool(re.search(pattern,low,re.I))
+              if has(r'\b(?:liquidazione|pagamento)\s+(?:di\s+|del\s+|degli\s+)?incentiv\w*\b'):
+                  return 'MONITORAGGIO','Liquidazione di incentivi: eventuali fasi già concluse sono riferimenti, non eventi nuovi.',17
+              if has(r'\b(?:risoluzione\s+(?:del\s+)?contratt\w*|decreto ingiuntivo|contenzios\w*|pignorament\w*|sospension[ei]\s+(?:dei\s+)?lavori|revoca\s+(?:dell[’\']?aggiudicazione|del contratto)|annullamento\s+(?:dell[’\']?aggiudicazione|del contratto)|sequestro\s+(?:del\s+)?cantiere)'):
+                  return 'PRIORITARIA','Il titolo segnala un possibile contenzioso o blocco: verificare le conseguenze negli atti.',87
+              if has(r'\b(?:ultimazione\s+(?:dei\s+)?lavori|fine\s+lavori|conclusione\s+(?:dei\s+)?lavori|collaudo\s+(?:finale|tecnico|tecnico.amministrativo)?|certificato\s+di\s+regolare\s+esecuzione|riapertura|apertura\s+al\s+pubblico|inaugurazione|entrata\s+in\s+(?:funzione|esercizio)|messa\s+in\s+esercizio)\b'):
+                  return 'PRIORITARIA','Possibile conclusione, collaudo o restituzione di un servizio: verificare l’effettiva operatività.',84
+              if has(r'\b(?:aumento\s+(?:di\s+)?cost[oi]|maggior[ei]\s+spes[ae]|incremento\s+(?:di\s+)?spesa|nuovo\s+finanziament|ulterior[ei]\s+finanziament|perizia\s+suppletiva|revisione\s+prezzi|variante\s+(?:in\s+corso\s+d[’\']opera|sostanziale)|raddoppio\s+(?:dei\s+)?cost[oi])\b'):
+                  return 'PRIORITARIA','Possibile variazione economica rilevante: verificare importi precedenti, attuali e date.',82
+              if has(r'\b(?:consegna\s+(?:dei\s+)?lavori|verbale\s+di\s+consegna|inizio\s+(?:dei\s+)?lavori|avvio\s+(?:del\s+)?cantiere|apertura\s+(?:del\s+)?cantiere|avvio\s+(?:degli\s+)?interventi)\b'):
+                  return 'PRIORITARIA','Il titolo parla di avvio/consegna: distinguere l’atto dall’effettiva apertura del cantiere.',78
+              if has(r'\b(?:stato\s+(?:di\s+)?avanzamento\s+lavori|s\.?a\.?l\.?\s*(?:n\.?\s*)?\d+|certificato\s+di\s+pagamento|liquidazione\s+(?:di\s+)?fattur[ae]|pagamento\s+(?:di\s+)?fattur[ae]|rimborso\s+spese|acconto\s+fattura)\b'):
+                  return 'MONITORAGGIO','Atto intermedio di avanzamento/pagamento: non è da solo notizia di avvio o conclusione.',18
+              if any(k in low for k in BORING):
+                  return 'MONITORAGGIO','Adempimento ricorrente: archiviarlo salvo anomalie riscontrate.',17
+              if has(r'\b(?:aggiudicazion\w*|affidamento\s+(?:dei\s+)?lavori|contratto\s+di\s+appalto|nuova\s+gara|indizione\s+(?:della\s+)?gara|bando\s+di\s+gara)\b'):
+                  return 'DA_VERIFICARE','Possibile affidamento o gara: non equivale all’avvio fisico dei lavori.',66
+              if has(r'\b(?:variante|finanziament\w*|stanziament\w*|approvazione\s+(?:del\s+)?progetto\s+esecutivo|progetto\s+esecutivo|approvazione\s+(?:del\s+)?progetto\s+definitivo|convenzione\s+urbanistica)\b'):
+                  return 'DA_VERIFICARE','Iter, variante o risorsa da contestualizzare: verificare che cosa cambia rispetto a prima.',52
+              return 'DA_VERIFICARE','Titolo non sufficiente per stabilire un fatto nuovo: verificare oggetto e documento.',36
+
+
           def textscore(title, locality):
               low=title.casefold()
               scores={k: sum(weight for term in terms if term in low) for k,(weight,terms) in CATEGORIES.items()}
               theme=max(scores,key=scores.get)
-              if scores[theme]==0: theme='Altri atti'
-              score=min(100, 15 + min(45,sum(sorted(scores.values(),reverse=True)[:2])) + (13 if EURO_RX.search(title) else 0) + (13 if CUP_RX.search(title) else 0) + (10 if CIG_RX.search(title) else 0) + (4 if locality in ('Camerino','Matelica','San Severino') else 0))
-              if any(x in low for x in BORING):score=max(0,score-20)
+              if scores[theme]==0:theme='Altri atti'
+              tier,reason,base=editorial_assessment(title)
+              # CUP e CIG sono codici identificativi, NON segnali di notiziabilita'.
+              locality_bonus=4 if locality in ('Camerino','Matelica','San Severino') else 0
+              theme_bonus=min(7,max(scores.values())) if scores.get(theme,0) else 0
+              score=min(100,base+theme_bonus+locality_bonus)
+              if tier=='MONITORAGGIO':score=min(score,25)
               return theme,score
           
           
@@ -417,6 +450,14 @@ jobs:
               for check in checks:
                   check['source_name']=srcs.get(check['source_id'],{}).get('name',check['source_id'])
               items=[dict(x) for x in db.execute('SELECT * FROM items ORDER BY score DESC,publication_date DESC LIMIT 3500')]
+              # Anche gli atti gia' censiti nel database ricevono la nuova valutazione.
+              # Non occorre azzerare l'archivio o perdere le deduplicazioni.
+              for x in items:
+                  tier,why,_=editorial_assessment(x['title'])
+                  x['editorial_class']=tier
+                  x['editorial_reason']=why
+                  x['theme'],x['score']=textscore(x['title'],srcs.get(x['source_id'],{}).get('group',''))
+              items.sort(key=lambda x:(x['editorial_class']=='PRIORITARIA',x['editorial_class']=='DA_VERIFICARE',x['score'],x['publication_date'] or ''),reverse=True)
               counts={k:sum(v['state']==k for v in statuses.values()) for k in ('VERDE','GIALLO','ROSSO','GRIGIO')}
               threshold=(clock.date()-timedelta(days=14)).isoformat()
               for x in items:
@@ -424,12 +465,15 @@ jobs:
                   x['group']=srcs.get(x['source_id'],{}).get('group','')
                   x['source_state']=statuses.get(x['source_id'],{}).get('state','GRIGIO')
                   x['old']=bool(x['publication_date'] and x['publication_date']<threshold)
-                  x['ready_for_article']=bool(x['evidence_level']=='DOCUMENTO' and x['score']>=48 and not x['old'])
+                  # Nessun atto e' automaticamente pronto per un articolo:
+                  # serve riscontro del fatto nuovo e verifica giornalistica.
+                  x['ready_for_article']=False
+                  x['needs_journalist_review']=x['editorial_class']=='PRIORITARIA'
                   x['link_proof']=x['document_url'] if x['document_url'] else x['url']
               payload={'generated':clock.strftime('%d/%m/%Y %H:%M %Z'), 'generated_iso':clock.isoformat(), 'counts':counts,'checks':[dict(x) for x in checks],'items':items,'warning':'Prototipo: un controllo parziale o non raggiunto non equivale ad assenza di atti. Verificare ogni documento sulla fonte originale.'}
               (OUT/'report.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
               with (OUT/'notizie.csv').open('w',newline='',encoding='utf-8-sig') as f:
-                  fields=['publication_date','act_date','source_name','title','theme','score','evidence_level','novelty','url','document_url','detail_error']
+                  fields=['publication_date','act_date','source_name','title','theme','score','editorial_class','editorial_reason','evidence_level','novelty','url','document_url','detail_error']
                   w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');w.writeheader();w.writerows(items)
               with (OUT/'fonti.csv').open('w',newline='',encoding='utf-8-sig') as f:
                   fields=['checked_at','source_id','state','count','new_count','latest_date','note','url']
@@ -936,6 +980,22 @@ jobs:
           t=t.replace('Il pilota interroga 11 raccolte','Il pilota interroga 12 raccolte')
           t=t.replace('Le 11 sorgenti sono configurate','Le 12 sorgenti sono configurate')
           t=t.replace('Le altre 69 dell’inventario storico','Le altre 68 dell’inventario storico')
+          # Classifica le piste in evidenza e mostra il MOTIVO della valutazione.
+          t=t.replace('<button class="chip" type="button" data-filter="docs" aria-pressed="false">Con documento</button>',
+                      '<button class="chip" type="button" data-filter="docs" aria-pressed="false">Con documento</button><button class="chip" type="button" data-filter="priority" aria-pressed="false">Prioritarie</button>')
+          t=t.replace("function isNew(x){const n=String(x.novelty||'');return /^(NUOVO|RETROSPETTIVO|AGGIORNAMENTO|DATA PUBBLICAZIONE DA VERIFICARE)/.test(n);}",
+                      "function isNew(x){return String(x.novelty||'')==='NUOVO';}")
+          t=t.replace("add(card,'h3','',x.title||'Oggetto non disponibile');",
+                      "add(card,'h3','',x.title||'Oggetto non disponibile');if(x.editorial_class){const label={PRIORITARIA:'Pista prioritaria',DA_VERIFICARE:'Da valutare',MONITORAGGIO:'Solo monitoraggio'}[x.editorial_class]||x.editorial_class;add(card,'div','card-flag',label+' · '+(x.editorial_reason||'Valutazione preliminare dal titolo'));}")
+          t=t.replace("if(state.feedFilter==='docs'&&x.evidence_level!=='DOCUMENTO')return false;return true",
+                      "if(state.feedFilter==='docs'&&x.evidence_level!=='DOCUMENTO')return false;if(state.feedFilter==='priority'&&x.editorial_class!=='PRIORITARIA')return false;return true")
+          t=t.replace("return (isNew(b)?1:0)-(isNew(a)?1:0)|| (b.score||0)-(a.score||0) ||pb.localeCompare(pa);",
+                      "const rank={PRIORITARIA:3,DA_VERIFICARE:2,MONITORAGGIO:1};return (rank[b.editorial_class]||0)-(rank[a.editorial_class]||0)||(isNew(b)?1:0)-(isNew(a)?1:0)||(b.score||0)-(a.score||0)||pb.localeCompare(pa);")
+          t=t.replace('<option value="30">Da 30/100</option>',
+                      '<option value="50">Da 50/100 (selezione)</option><option value="30">Da 30/100</option>')
+          t=t.replace('Punteggio indicativo, non verifica di veridicità.',
+                      'Valutazione preliminare dal titolo: SAL ordinari declassati. Avvio, conclusione e anomalie richiedono verifica degli atti.')
+          t=t.replace('Radar Macerata · Pilota 1.1','Radar Macerata · Pilota 1.4')
           # Sui documenti Halley Matelica l'URL del download e' legato alla sessione.
           marker=" if(x.document_url){const pdf=link('Apri PDF ↗',x.document_url);if(pdf)actions.append(pdf);}"
           addon=" if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&!x.document_url)add(card,'div','card-flag','PDF letto dal Radar, ma nessun collegamento diretto verificato senza sessione. Apri la fonte e cerca il numero di pubblicazione.');if(x.source_id==='matelica_albo_corrente'&&x.evidence_level==='DOCUMENTO'&&x.document_url)add(card,'div','card-flag','Il link Apri PDF punta al documento ufficiale del Comune, verificato al momento del controllo; potrebbe non restare disponibile dopo la scadenza di pubblicazione.');"
