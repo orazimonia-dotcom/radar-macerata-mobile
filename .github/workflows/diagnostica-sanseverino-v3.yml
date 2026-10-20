@@ -1,0 +1,103 @@
+name: Radar Macerata - San Severino v3 verifica quattro fonti
+
+# Test indipendente. Non modifica il Radar e non scarica né pubblica documenti personali.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verifica-fonti:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Installa browser
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Prova i quattro collegamenti forniti
+        shell: bash
+        run: |
+          cat > /tmp/radar_verifica_sanseverino.py <<'PY'
+          import json, re, time
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from urllib.parse import urlsplit
+          from playwright.sync_api import sync_playwright
+
+          SOURCES = [
+              ('portale_5940_5884', 'https://sanseverinomarche.trasparenza-valutazione-merito.it/web/trasparenza/papca-p/-/papca/c_i156/5940/5884/-1/-1/-1/-1/-1/-1/-1/-1/-1/-1'),
+              ('portale_5940_5882', 'https://sanseverinomarche.trasparenza-valutazione-merito.it/web/trasparenza/papca-p/-/papca/c_i156/5940/5882/-1/-1/-1/-1/-1/-1/-1/-1/-1/-1'),
+              ('comune_provvedimenti', 'https://www.comune.sanseverinomarche.mc.it/amministrazione-trasparente/provvedimenti-cms/?a=provvedimenti&t=p'),
+              ('portale_5939_5890', 'https://sanseverinomarche.trasparenza-valutazione-merito.it/web/trasparenza/papca-p/-/papca/c_i156/5939/5890/-1/-1/-1/-1/-1/-1/-1/-1/-1/-1'),
+          ]
+          BLOCK = ('web page blocked', 'pagina web bloccata', 'mdawaf', 'access denied', 'request blocked', 'forbidden')
+          root = Path('diagnostica_sanseverino_v3')
+          root.mkdir(exist_ok=True)
+          report = {'utc': datetime.now(timezone.utc).isoformat(), 'note':'Una pagina HTTP 200 può essere un blocco WAF; leggere sempre esito.', 'fonti':[]}
+
+          def clean_url(u):
+              p=urlsplit(u)
+              return f'{p.scheme}://{p.netloc}{p.path}' if p.scheme.startswith('http') else ''
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              for name, url in SOURCES:
+                  item = {'name':name, 'url':clean_url(url), 'result':'NON_VERIFICATO'}
+                  ctx=browser.new_context(locale='it-IT',viewport={'width':1250,'height':900},ignore_https_errors=False)
+                  page=ctx.new_page()
+                  try:
+                      res=page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                      page.wait_for_timeout(2700)
+                      item['http_status']=res.status if res else None
+                      item['final_url']=clean_url(page.url)
+                      item['title']=page.title()[:140]
+                      body=page.locator('body').inner_text(timeout=9000)
+                      item['sample_text']=' '.join(body.split())[:420]
+                      is_blocked=any(x in body.lower() for x in BLOCK)
+                      if is_blocked or item['http_status'] in (401,403,429):
+                          item['result']='BLOCCO_ACCESSO'
+                      elif (item['http_status'] or 0)>=400:
+                          item['result']='ERRORE_HTTP'
+                      elif re.search(r'pubblicazioni|provvedimenti|delibere|determine|atti\s+amministrativi|albo\s+pretorio',body,re.I):
+                          item['result']='CONTENUTO_VISIBILE_DA_APPROFONDIRE'
+                      else:
+                          item['result']='PAGINA_CARICATA_MA_ATTI_NON_VERIFICATI'
+                      anchors=page.locator('a[href]')
+                      item['link_count']=anchors.count()
+                      examples=[]
+                      for j in range(min(item['link_count'],100)):
+                          el=anchors.nth(j)
+                          title=' '.join((el.inner_text(timeout=1000) or '').split())[:100]
+                          href=el.get_attribute('href') or ''
+                          if re.search(r'pdf|albo|determ|deliber|ordinan|provved|dettagl|scarica|download|\.p7m', title+' '+href,re.I):
+                              examples.append({'text':title,'url':clean_url(href) if href.startswith('http') else href.split('?')[0][:150]})
+                          if len(examples)>=12:break
+                      item['relevant_links']=examples
+                      item['table_rows']=page.locator('tr').count()
+                  except Exception as ex:
+                      item['result']='ERRORE_BROWSER'
+                      item['error']=str(ex)[:350]
+                  finally:
+                      ctx.close()
+                  report['fonti'].append(item)
+                  print('FONTE:',name, 'ESITO:',item['result'], 'HTTP:',item.get('http_status'), 'RIGHE:',item.get('table_rows'),flush=True)
+              browser.close()
+          n=sum(x['result']=='CONTENUTO_VISIBILE_DA_APPROFONDIRE' for x in report['fonti'])
+          report['status']='FONTI_DA_ANALIZZARE' if n else 'NESSUNA_FONTE_LEGGIBILE_CONFERMATA'
+          (root/'risultati.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('ESITO FINALE:',report['status'],'/',len(report['fonti']),'fonti testate',flush=True)
+          # La diagnostica è un successo operativo solo se almeno una fonte presenta atti leggibili.
+          # Non nascondere un blocco dietro il segno di spunta verde di GitHub.
+          if n==0:raise SystemExit(1)
+          PY
+          python /tmp/radar_verifica_sanseverino.py
+      - name: Salva il rapporto diagnostico
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostica-sanseverino-v3
+          path: diagnostica_sanseverino_v3/risultati.json
+          retention-days: 7
+          if-no-files-found: warn
