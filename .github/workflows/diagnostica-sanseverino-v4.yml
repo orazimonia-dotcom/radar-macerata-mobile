@@ -1,0 +1,117 @@
+name: Radar Macerata - San Severino v4 verifica determine
+
+# Test indipendente: non aggiorna Radar; legge soltanto indici pubblici.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verifica-determine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Installa librerie
+        run: python -m pip install "requests>=2.31,<3" "beautifulsoup4>=4.12,<5"
+      - name: Verifica elenco anno 2026 e seconda pagina
+        shell: bash
+        run: |
+          cat > /tmp/verifica_sanseverino_2026.py <<'PY'
+          import requests, re, json, hashlib
+          from bs4 import BeautifulSoup
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.parse import urljoin
+
+          root = Path('diagnostica_sanseverino_v4')
+          root.mkdir(exist_ok=True)
+          base = 'https://www.comune.sanseverinomarche.mc.it/delibere-a-contrarre/'
+          urls = [base, base + '?a=&anno=2026&pg=2']
+          report = {'checked_at_utc': datetime.now(timezone.utc).isoformat(),
+                    'pages': [], 'success': False}
+          sess = requests.Session()
+          sess.headers.update({
+              'User-Agent': 'RadarMacerata-analisi-fonti/1.0 (monitoraggio documenti pubblici)',
+              'Accept': 'text/html,application/xhtml+xml'
+          })
+          for i, url in enumerate(urls, 1):
+              item = {'page': i, 'url': url, 'status': 'INACCESSIBILE'}
+              try:
+                  r = sess.get(url, timeout=27)
+                  item['http'] = r.status_code
+                  item['final_url'] = r.url.split('?')[0]
+                  item['html_bytes'] = len(r.content)
+                  soup = BeautifulSoup(r.text, 'html.parser')
+                  for t in soup(['script', 'style', 'noscript']):
+                      t.decompose()
+                  tx = re.sub(r'\s+', ' ', soup.get_text(' ', strip=True))
+                  item['text_characters'] = len(tx)
+                  item['page_title'] = soup.title.get_text(' ', strip=True)[:130] if soup.title else ''
+                  item['waf'] = any(k in tx.lower() for k in (
+                      'web page blocked', 'pagina web bloccata', 'mdawaf001', 'access denied'))
+                  item['text_preview'] = tx[:250]
+                  item['html_sha256'] = hashlib.sha256(r.content).hexdigest()
+                  records = []
+                  pattern = re.compile(
+                      r'Determina\s*(?:n\.?\s*(\d{1,5}))?\s*del\s*(\d{2}/\d{2}/20\d{2})\s*Oggetto\s*:\s*',
+                      re.I)
+                  for m in pattern.finditer(tx):
+                      end = tx.find(' Link al provvedimento', m.end())
+                      if end < 0 or end - m.end() > 1400:
+                          end = min(len(tx), m.end() + 600)
+                      descr = tx[m.end():end].strip()
+                      cig = re.search(r'\b[A-Z0-9]{10}\b', descr)
+                      records.append({
+                          'numero': m.group(1), 'data': m.group(2),
+                          'oggetto': descr[:300],
+                          'cig': cig.group(0) if cig else None
+                      })
+                  item['parsed_records'] = len(records)
+                  item['dates_latest'] = sorted(
+                      {z['data'] for z in records},
+                      key=lambda x: datetime.strptime(x, '%d/%m/%Y'), reverse=True)[:8]
+                  item['recent_examples'] = sorted(
+                      records, key=lambda x: datetime.strptime(x['data'], '%d/%m/%Y'),
+                      reverse=True)[:10]
+                  links = [urljoin(r.url, a.get('href'))
+                           for a in soup.find_all('a', href=True)]
+                  item['links_total'] = len(links)
+                  item['links_portale_trasparenza'] = sum(
+                      'trasparenza-valutazione-merito.it' in link for link in links)
+                  item['links_pdf_direct'] = sum(
+                      bool(re.search(r'\.pdf(?:$|[?#])', link, re.I)) for link in links)
+                  item['links_page_2'] = sum('pg=2' in link for link in links)
+                  if r.status_code == 200 and not item['waf'] and records:
+                      item['status'] = 'ATTI_2026_ESTRATTI'
+                  elif r.status_code == 200 and not item['waf']:
+                      item['status'] = 'PAGINA_LEGGIBILE_MA_NON_ESTRATTI_ATTI'
+                  elif item['waf']:
+                      item['status'] = 'BLOCCO_PORTALE'
+                  else:
+                      item['status'] = 'ERRORE_HTTP'
+              except Exception as exc:
+                  item['error'] = str(exc)[:240]
+              report['pages'].append(item)
+              print('PAGINA', i, 'ESITO', item['status'],
+                    'HTTP', item.get('http'),
+                    'ATTI', item.get('parsed_records', 0),
+                    'PDF', item.get('links_pdf_direct', 0),
+                    'ULTIME_DATE', item.get('dates_latest', [])[:3], flush=True)
+          report['success'] = report['pages'][0]['status'] == 'ATTI_2026_ESTRATTI'
+          report['coverage'] = 'PARZIALE: sole determine a contrarre; non albo pretorio completo'
+          (root / 'risultati.json').write_text(
+              json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+          print('ESITO GENERALE:', 'DATI ESTRAIBILI, COPERTURA PARZIALE'
+                if report['success'] else 'DATI NON CONFERMATI')
+          if not report['success']:
+              raise SystemExit(1)
+          PY
+          python /tmp/verifica_sanseverino_2026.py
+      - name: Conserva il rapporto tecnico
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostica-sanseverino-v4
+          path: diagnostica_sanseverino_v4/risultati.json
+          retention-days: 7
